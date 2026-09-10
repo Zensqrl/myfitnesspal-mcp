@@ -1,4 +1,5 @@
-import re
+import hashlib
+import json
 import uuid
 from http.cookiejar import Cookie, CookieJar
 
@@ -18,16 +19,33 @@ class NotConnectedError(RuntimeError):
     pass
 
 
-_AUTH_ERROR_PATTERN = re.compile(
-    r"\b(401|403|unauthorized|forbidden|csrf|login|log in|logged in|session|token)\b",
-    re.IGNORECASE,
-)
+class AuthenticationError(RuntimeError):
+    """A request conclusively failed because authentication is invalid."""
+
+
+class ClientInitializationError(RuntimeError):
+    """A sanitized non-authentication client construction failure."""
+
+
+class ProfileLookupError(MyfitnesspalLoginError):
+    """Authentication succeeded but MFP's optional profile lookup failed."""
 
 
 def is_auth_error(exc: Exception) -> bool:
-    if isinstance(exc, (NotConnectedError, MyfitnesspalLoginError)):
-        return True
-    return bool(_AUTH_ERROR_PATTERN.search(str(exc)))
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (AuthenticationError, NotConnectedError, MyfitnesspalLoginError)):
+            return True
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None)
+        if status is None:
+            status = getattr(current, "status_code", None)
+        if status in (401, 403):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class CurlCffiClient(myfitnesspal.Client):
@@ -50,11 +68,16 @@ class CurlCffiClient(myfitnesspal.Client):
         self._log_requests_to = None
         self.unit_aware = False
         self.session = cffi_requests.Session(
-            impersonate=impersonate or config.impersonate()
+            impersonate=impersonate or config.impersonate(),
+            timeout=config.request_timeout(),
         )
         self.session.cookies.update(cookiejar)
-        self._auth_data = self._get_auth_data()
-        self._user_metadata = self._get_user_metadata()
+        try:
+            self._auth_data = self._get_auth_data()
+            self._user_metadata = self._get_user_metadata()
+        except Exception:
+            self.session.close()
+            raise
 
     def _get_user_metadata(self):
         """MFP's v2 users endpoint 500s for some accounts; fall back to the
@@ -63,11 +86,13 @@ class CurlCffiClient(myfitnesspal.Client):
             meta = super()._get_user_metadata()
             if meta and meta.get("username"):
                 return meta
+        except MyfitnesspalLoginError:
+            raise
         except Exception:
             pass
         username = self._username_override or auth.saved_username()
         if not username:
-            raise MyfitnesspalLoginError(
+            raise ProfileLookupError(
                 "Authenticated, but couldn't read your MyFitnessPal profile. "
                 "Set MFP_USERNAME to your MyFitnessPal username (not email) and retry."
             )
@@ -112,24 +137,43 @@ def build_client(
 
 
 _client: CurlCffiClient | None = None
+_client_key: str | None = None
+
+
+def _credentials_key(cookies: dict[str, str], username: str | None) -> str:
+    encoded = json.dumps([username, sorted(cookies.items())], separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def get_client() -> CurlCffiClient:
-    global _client
-    if _client is not None:
-        return _client
+    global _client, _client_key
     cookies = auth.load_cookies()
     if not cookies:
         raise NotConnectedError(RECONNECT_HINT)
+    username = auth.saved_username()
+    key = _credentials_key(cookies, username)
+    if _client is not None and _client_key == key:
+        return _client
+    if _client is not None:
+        reset()
     try:
-        _client = build_client(cookies)
+        _client = build_client(cookies, username=username)
+        _client_key = key
     except NotConnectedError:
         raise
     except Exception as exc:
-        raise NotConnectedError(f"{RECONNECT_HINT} (auth failed: {exc})") from exc
+        if is_auth_error(exc):
+            raise AuthenticationError(RECONNECT_HINT) from exc
+        raise ClientInitializationError("Could not initialize the MyFitnessPal client.") from exc
     return _client
 
 
 def reset() -> None:
-    global _client
+    global _client, _client_key
+    old_client = _client
     _client = None
+    _client_key = None
+    session = getattr(old_client, "session", None)
+    close = getattr(session, "close", None)
+    if callable(close):
+        close()

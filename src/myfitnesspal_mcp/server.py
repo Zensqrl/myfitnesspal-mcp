@@ -1,22 +1,47 @@
 import asyncio
 import datetime
+import math
+import threading
 from typing import Any, Callable
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
-from . import diary, mfp_client, refresh, sync
+from . import auth, config, diary, mfp_client, refresh, sync
 from .store import Store, trend_column
 
 mcp = FastMCP("myfitnesspal")
 
 _store: Store | None = None
+_store_account: str | None = None
+_store_lock = threading.RLock()
+_stores: dict[str | None, Store] = {}
 
 
-def get_store() -> Store:
-    global _store
-    if _store is None:
-        _store = Store()
-    return _store
+def get_store(username: str | None = None) -> Store:
+    """Return the cache for exactly one account, or the legacy cache if unknown."""
+    global _store, _store_account
+    account_id = config.account_key(username) if username else None
+    with _store_lock:
+        if _store is not None and _store_account == account_id:
+            return _store
+        if account_id in _stores:
+            _store = _stores[account_id]
+        else:
+            path = config.database_path(username)
+            _store = Store(path, account_id=account_id)
+            _stores[account_id] = _store
+        _store_account = account_id
+        return _store
+
+
+def _store_for_client(client: Any) -> Store:
+    return get_store(client.effective_username)
+
+
+def _run_session_op(op: Callable[[Store, Any], Any]) -> Any:
+    client = mfp_client.get_client()
+    return op(_store_for_client(client), client)
 
 
 def parse_day(value: str | None) -> datetime.date:
@@ -30,7 +55,7 @@ def parse_range(
 ) -> tuple[datetime.date, datetime.date]:
     end_day = parse_day(end)
     if start is None:
-        start_day = end_day - datetime.timedelta(days=span_days)
+        start_day = end_day - datetime.timedelta(days=span_days - 1)
     else:
         start_day = parse_day(start)
     if start_day > end_day:
@@ -38,7 +63,12 @@ def parse_range(
     return start_day, end_day
 
 
-async def run_with_refresh(ctx: Context, op: Callable[[], Any]) -> Any:
+async def _info(ctx: Context | None, message: str) -> None:
+    if ctx is not None:
+        await ctx.info(message)
+
+
+async def run_with_refresh(ctx: Context | None, op: Callable[[], Any]) -> Any:
     """Runs a blocking MFP operation; on an auth-shaped failure, notifies the
     client, refreshes the session (headless browser profile when available,
     otherwise re-reads MFP_COOKIE / cookies.json), and retries once."""
@@ -47,30 +77,69 @@ async def run_with_refresh(ctx: Context, op: Callable[[], Any]) -> Any:
     except Exception as exc:
         if not mfp_client.is_auth_error(exc):
             raise
-        await ctx.info(
+        await _info(ctx,
             "MyFitnessPal rejected the session — refreshing credentials and retrying."
         )
         try:
             await asyncio.to_thread(refresh.refresh_session)
             result = await asyncio.to_thread(op)
         except Exception as retry_exc:
-            await ctx.info("Session refresh failed.")
+            await _info(ctx, "Session refresh failed.")
             raise RuntimeError(
-                f"{mfp_client.RECONNECT_HINT} (retry after refresh failed: {retry_exc})"
+                f"{mfp_client.RECONNECT_HINT} (retry after refresh failed)"
             ) from retry_exc
-        await ctx.info("Session refreshed; the retried call succeeded.")
+        await _info(ctx, "Session refreshed; the retried call succeeded.")
         return result
 
 
-async def with_session(ctx: Context, op: Callable[[Store, Any], Any]) -> Any:
+async def with_session(ctx: Context | None, op: Callable[[Store, Any], Any]) -> Any:
     """Runs `op` against the store and a live MFP client, re-resolving both on
     the retry so a refreshed session is picked up."""
     return await run_with_refresh(
-        ctx, lambda: op(get_store(), mfp_client.get_client())
+        ctx, lambda: _run_session_op(op)
     )
 
 
-@mcp.tool()
+def _required_text(value: str, name: str) -> str:
+    if not value or not value.strip():
+        raise ValueError(f"{name} must not be blank")
+    return value.strip()
+
+
+def _positive_finite(value: float, name: str) -> float:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive finite number")
+    return value
+
+
+async def _refresh_after_write(store: Store, client: Any, day: datetime.date) -> list[str]:
+    """Best-effort cache repair; a refresh failure cannot undo a remote write."""
+    try:
+        return await asyncio.to_thread(sync.refresh_day, store, client, day)
+    except Exception:
+        return ["MyFitnessPal was updated, but the local cache refresh failed"]
+
+
+async def _write_result(
+    ctx: Context | None,
+    prepare: Callable[[Store, Any], Any],
+    commit: Callable[[Any, Any], dict],
+    day: datetime.date | None = None,
+) -> tuple[dict, Store]:
+    store, client, prepared = await with_session(
+        ctx, lambda store, client: (store, client, prepare(store, client))
+    )
+    # Deliberately no auth retry here: once submission starts, replay may duplicate it.
+    result = await asyncio.to_thread(commit, client, prepared)
+    response = {"ok": True, **result}
+    if day is not None:
+        warnings = await _refresh_after_write(store, client, day)
+        if warnings:
+            response["warnings"] = warnings
+    return response, store
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_get_day(date: str | None = None, ctx: Context = None) -> dict:
     """Nutrition summary, diary entries, the MyFitnessPal daily note, and the
     local feel note for a day.
@@ -80,14 +149,16 @@ async def fitness_get_day(date: str | None = None, ctx: Context = None) -> dict:
     day = parse_day(date)
 
     def op(store, client):
-        sync.poll(store, client)
-        sync.refresh_day(store, client, day)
-        return store.day_record(day.isoformat())
+        warnings = sync.poll(store, client, start=day, end=day)
+        result = store.day_record(day.isoformat())
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     return await with_session(ctx, op)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_search_food(
     query: str, limit: int = 5, with_macros: bool = True, ctx: Context = None
 ) -> dict:
@@ -96,6 +167,10 @@ async def fitness_search_food(
     Each candidate has name, brand, calories, macros, serving, and the
     food_id + weight_id to pass to fitness_log_food to log exactly that item.
     """
+
+    query = _required_text(query, "query")
+    if not 1 <= limit <= 20:
+        raise ValueError("limit must be between 1 and 20")
 
     def op(store, client):
         return {
@@ -106,7 +181,7 @@ async def fitness_search_food(
     return await with_session(ctx, op)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 async def fitness_log_food(
     query: str,
     meal: str = "breakfast",
@@ -124,18 +199,27 @@ async def fitness_log_food(
     date: YYYY-MM-DD (default: today).
     """
     day = parse_day(date)
+    query = _required_text(query, "query")
+    meal = diary.normalize_meal(meal)
+    quantity = _positive_finite(quantity, "quantity")
+    if (food_id is None) != (weight_id is None):
+        raise ValueError("food_id and weight_id must be supplied together")
+    if food_id is not None:
+        food_id = _required_text(food_id, "food_id")
+        weight_id = _required_text(weight_id, "weight_id")
+    result, store = await _write_result(
+        ctx,
+        lambda store, client: diary.prepare_food(
+            client, day, meal, query, quantity, food_id, weight_id
+        ),
+        diary.commit_food,
+        day,
+    )
+    result["day"] = store.day_record(day.isoformat())
+    return result
 
-    def op(store, client):
-        result = diary.push_food(
-            client, day, meal, query, quantity, food_id=food_id, weight_id=weight_id
-        )
-        sync.refresh_day(store, client, day)
-        return {"ok": True, **result, "day": store.day_record(day.isoformat())}
 
-    return await with_session(ctx, op)
-
-
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 async def fitness_delete_food(
     query: str, meal: str | None = None, date: str | None = None, ctx: Context = None
 ) -> dict:
@@ -150,16 +234,25 @@ async def fitness_delete_food(
     date: YYYY-MM-DD (default: today).
     """
     day = parse_day(date)
+    query = _required_text(query, "query")
+    meal = diary.normalize_meal(meal, optional=True)
 
-    def op(store, client):
-        result = diary.delete_food(client, day, query, meal)
-        sync.refresh_day(store, client, day)
-        return {"ok": True, **result}
+    def prepare(store, client):
+        doc, token = diary.diary_page(client, day)
+        return {"entry": diary.resolve_entry(diary.diary_entries(doc), query, meal, day), "token": token}
 
-    return await with_session(ctx, op)
+    result, _ = await _write_result(
+        ctx, prepare,
+        lambda client, item: (
+            diary.remove_entry(client, item["entry"]["entry_id"], item["token"])
+            or {"removed": item["entry"]["name"], "meal": item["entry"]["meal"]}
+        ),
+        day,
+    )
+    return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 async def fitness_modify_food(
     query: str,
     new_query: str | None = None,
@@ -179,16 +272,23 @@ async def fitness_modify_food(
     quantity). meal: breakfast|lunch|dinner|snacks. date: YYYY-MM-DD (default: today).
     """
     day = parse_day(date)
+    query = _required_text(query, "query")
+    if new_query is not None:
+        new_query = _required_text(new_query, "new_query")
+    meal = diary.normalize_meal(meal)
+    quantity = _positive_finite(quantity, "quantity")
+    result, _ = await _write_result(
+        ctx,
+        lambda store, client: diary.prepare_modify_food(
+            client, day, meal, query, new_query, quantity
+        ),
+        diary.commit_modify_food,
+        day,
+    )
+    return result
 
-    def op(store, client):
-        result = diary.modify_food(client, day, meal, query, new_query, quantity)
-        sync.refresh_day(store, client, day)
-        return {"ok": True, **result}
 
-    return await with_session(ctx, op)
-
-
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 async def fitness_log_weight(
     weight: float, date: str | None = None, ctx: Context = None
 ) -> dict:
@@ -199,16 +299,19 @@ async def fitness_log_weight(
     date: YYYY-MM-DD (default: today).
     """
     day = parse_day(date)
-
-    def op(store, client):
-        result = diary.set_weight(client, day, weight)
+    weight = _positive_finite(weight, "weight")
+    result, store = await _write_result(
+        ctx, lambda store, client: None,
+        lambda client, prepared: diary.set_weight(client, day, weight),
+    )
+    try:
         store.upsert_nutrition(day.isoformat(), weight=result["weight"])
-        return {"ok": True, **result}
+    except Exception:
+        result["warnings"] = ["MyFitnessPal was updated, but the local cache update failed"]
+    return result
 
-    return await with_session(ctx, op)
 
-
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_get_exercise(date: str | None = None, ctx: Context = None) -> dict:
     """Read the MyFitnessPal exercise diary (cardio + strength) for a day.
 
@@ -222,7 +325,7 @@ async def fitness_get_exercise(date: str | None = None, ctx: Context = None) -> 
     return await with_session(ctx, op)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_get_note(date: str | None = None, ctx: Context = None) -> dict:
     """Read the MyFitnessPal daily diary note (the free-text 'Notes' box at the
     bottom of the day) straight from your account.
@@ -239,7 +342,7 @@ async def fitness_get_note(date: str | None = None, ctx: Context = None) -> dict
     return await with_session(ctx, op)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 async def fitness_log_note(
     text: str, date: str | None = None, append: bool = False, ctx: Context = None
 ) -> dict:
@@ -251,16 +354,19 @@ async def fitness_log_note(
     of replacing it. date: YYYY-MM-DD (default: today).
     """
     day = parse_day(date)
-
-    def op(store, client):
-        result = diary.push_note(client, day, text, append=append)
+    result, store = await _write_result(
+        ctx,
+        lambda store, client: diary.prepare_note(client, day, text, append),
+        diary.commit_note,
+    )
+    try:
         store.set_note(day.isoformat(), result["note"])
-        return {"ok": True, **result}
+    except Exception:
+        result["warnings"] = ["MyFitnessPal was updated, but the local cache update failed"]
+    return result
 
-    return await with_session(ctx, op)
 
-
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def fitness_log_feel(
     note: str | None = None, rating: int | None = None, date: str | None = None
 ) -> dict:
@@ -270,10 +376,12 @@ def fitness_log_feel(
     rating: optional 1-5. date: YYYY-MM-DD (default: today).
     """
     day = parse_day(date)
-    return get_store().set_feel(day.isoformat(), note, rating)
+    if rating is not None and not 1 <= rating <= 5:
+        raise ValueError("rating must be between 1 and 5")
+    return get_store(auth.saved_username()).set_feel(day.isoformat(), note, rating)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_get_trends(
     metric: str, start: str | None = None, end: str | None = None, ctx: Context = None
 ) -> dict:
@@ -287,16 +395,19 @@ async def fitness_get_trends(
     start_day, end_day = parse_range(start, end)
 
     def op(store, client):
-        sync.poll(store, client)
-        return {
+        warnings = sync.poll(store, client, start=start_day, end=end_day)
+        result = {
             "metric": metric,
             "points": store.trend(metric, start_day.isoformat(), end_day.isoformat()),
         }
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     return await with_session(ctx, op)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_bulk_export(
     start: str | None = None, end: str | None = None, sync_first: bool = False,
     ctx: Context = None,
@@ -312,16 +423,25 @@ async def fitness_bulk_export(
     start_day, end_day = parse_range(start, end)
 
     def op():
-        store = get_store()
         if sync_first:
-            span = (end_day - start_day).days + 1
-            sync.poll(store, mfp_client.get_client(), days=span, force=True)
+            client = mfp_client.get_client()
+            store = _store_for_client(client)
+            warnings = sync.poll(
+                store, client, force=True,
+                start=start_day, end=end_day,
+            )
+        else:
+            store = get_store(auth.saved_username())
+            warnings = []
         days = store.export_range(start_day.isoformat(), end_day.isoformat())
-        return {
+        result = {
             "start": start_day.isoformat(),
             "end": end_day.isoformat(),
             "count": len(days),
             "days": days,
         }
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     return await run_with_refresh(ctx, op)

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from myfitnesspal_mcp import auth
 
 
@@ -55,3 +57,23 @@ def test_username_env_override(tmp_path, monkeypatch):
     auth.save_cookies({"a": "1"}, username="fromfile")
     monkeypatch.setenv("MFP_USERNAME", "fromenv")
     assert auth.saved_username() == "fromenv"
+
+
+def test_malformed_saved_credentials_raise_sanitized_error(tmp_path, monkeypatch):
+    path = tmp_path / "cookies.json"
+    path.write_text('{"cookies": ["super-secret"]}')
+    monkeypatch.setattr(auth.config, "cookies_path", lambda: path)
+    monkeypatch.delenv("MFP_COOKIE", raising=False)
+    with pytest.raises(auth.CredentialError) as caught:
+        auth.load_cookies()
+    assert "super-secret" not in str(caught.value)
+
+
+def test_save_is_atomic_when_replace_fails(tmp_path, monkeypatch):
+    path = tmp_path / "cookies.json"
+    path.write_text('{"cookies": {"old": "value"}}')
+    monkeypatch.setattr(auth.config, "cookies_path", lambda: path)
+    monkeypatch.setattr(auth.os, "replace", lambda *_: (_ for _ in ()).throw(OSError("boom")))
+    with pytest.raises(OSError):
+        auth.save_cookies({"new": "value"})
+    assert json.loads(path.read_text())["cookies"] == {"old": "value"}

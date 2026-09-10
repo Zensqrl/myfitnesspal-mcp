@@ -1,4 +1,5 @@
 import pytest
+from myfitnesspal_mcp.store import Store
 
 
 def test_upsert_nutrition_partial_updates(store):
@@ -26,6 +27,18 @@ def test_replace_diary(store):
     )
     entries = store.diary("2026-07-01")
     assert [e["name"] for e in entries] == ["Oats", "Salad"]
+
+
+def test_replace_diary_rolls_back_standalone_failure(store):
+    store.replace_diary("2026-07-01", [{"meal": "Breakfast", "name": "Egg"}])
+
+    class BrokenEntry:
+        def get(self, key):
+            raise ValueError("bad entry")
+
+    with pytest.raises(ValueError, match="bad entry"):
+        store.replace_diary("2026-07-01", [BrokenEntry()])
+    assert [e["name"] for e in store.diary("2026-07-01")] == ["Egg"]
 
 
 def test_feel_upsert(store):
@@ -95,3 +108,23 @@ def test_mark_synced_roundtrip(store):
     assert store.last_synced_on() is None
     store.mark_synced()
     assert store.last_synced_on() is not None
+
+
+def test_component_status_is_independent_of_nutrition_rows(store):
+    store.upsert_nutrition("2026-07-01", weight=80)
+    assert store.component_status("2026-07-01", "nutrition_diary") is None
+    store.mark_component("2026-07-01", "measurements", complete=True)
+    assert store.component_status("2026-07-01", "measurements")["complete"] is True
+
+
+def test_account_binding_requires_explicit_legacy_migration(tmp_path):
+    path = tmp_path / "legacy.db"
+    legacy = Store(path)
+    legacy.upsert_nutrition("2026-07-01", calories=1)
+    legacy.conn.close()
+    with pytest.raises(ValueError, match="legacy cache is unbound"):
+        Store(path, account_id="account-a")
+    migrated = Store(path, account_id="account-a", migrate_legacy=True)
+    assert migrated.account_id() == "account-a"
+    with pytest.raises(ValueError, match="different account"):
+        migrated.bind_account("account-b")

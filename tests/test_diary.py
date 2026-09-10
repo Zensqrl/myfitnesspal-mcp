@@ -85,6 +85,14 @@ def test_push_food_no_results(client, make_response):
         diary.push_food(client, TODAY, "breakfast", "unobtainium")
 
 
+def test_diary_page_missing_csrf_is_typed_auth_error(client, make_response):
+    client.session.route(
+        "GET", "food/diary/tester", make_response(text="<html><body>login</body></html>")
+    )
+    with pytest.raises(diary.AuthenticationError):
+        diary.diary_page(client, TODAY)
+
+
 def test_diary_entries_map_meals(client):
     doc, token = diary.diary_page(client, TODAY)
     assert token == "DIARYTOKEN"
@@ -165,6 +173,48 @@ def test_modify_food_deletes_then_adds(client):
     assert result == {"removed": "Coffee, 1 cup", "added": "Banana", "meal": "breakfast"}
 
 
+def test_modify_food_resolves_replacement_before_removing(client, make_response):
+    client.session.route(
+        "GET", "food/search", make_response(text="<html><body></body></html>")
+    )
+    with pytest.raises(RuntimeError, match="no MyFitnessPal food found"):
+        diary.modify_food(client, TODAY, "breakfast", "coffee", "missing")
+    assert not any("food/remove" in url for _, url, _ in client.session.calls)
+
+
+def test_modify_food_reports_partial_completion_when_add_fails(client, make_response):
+    client.session.route("POST", "food/add", make_response(status_code=500))
+    with pytest.raises(diary.PartialMutation) as exc_info:
+        diary.modify_food(client, TODAY, "breakfast", "coffee", "banana")
+    assert exc_info.value.completed == ["removed:e2"]
+    post_urls = [url for method, url, _ in client.session.calls if method == "POST"]
+    assert "food/remove/e2" in post_urls[-2]
+    assert "food/add" in post_urls[-1]
+
+
+def test_modify_food_reports_uncertain_replacement_after_transport_failure(client):
+    original_post = client.session.post
+
+    def post(url, **kwargs):
+        if "food/add" in url:
+            raise OSError("secret transport detail")
+        return original_post(url, **kwargs)
+
+    client.session.post = post
+    with pytest.raises(diary.PartialMutation, match="replacement outcome is uncertain"):
+        diary.modify_food(client, TODAY, "breakfast", "coffee", "banana")
+
+
+@pytest.mark.parametrize("meal", ["snack", "Snack", "snacks"])
+def test_normalize_meal_accepts_snack_alias(meal):
+    assert diary.normalize_meal(meal) == "snacks"
+
+
+def test_normalize_meal_rejects_unknown_value():
+    with pytest.raises(ValueError, match="meal must be"):
+        diary.normalize_meal("brunch")
+
+
 def test_get_note_double_unescapes_body(client, make_response):
     client.session.route(
         "GET", "food/note", make_response(json_data={"item": {"body": "a &amp;amp; b"}})
@@ -225,3 +275,11 @@ def test_set_weight_posts_v2_items(client, make_response):
     assert kwargs["json"] == {
         "items": [{"type": "Weight", "value": 175.0, "date": "2026-07-08"}]
     }
+
+
+def test_set_weight_invalid_success_response_has_uncertain_outcome(client, make_response):
+    client.session.route(
+        "POST", "v2/measurements", make_response(status_code=200, json_data=None)
+    )
+    with pytest.raises(diary.MutationOutcomeUncertain, match="response was invalid"):
+        diary.set_weight(client, TODAY, 175.0)
