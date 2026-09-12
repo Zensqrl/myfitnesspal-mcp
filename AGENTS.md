@@ -13,23 +13,29 @@ endpoints can change without notice.
 
 ## Repository map
 
-- `src/myfitnesspal_mcp/server.py`: FastMCP tool definitions, date/range
-  validation, thread offloading, read-operation authentication retry behavior,
-  and safe write completion handling.
+- `src/myfitnesspal_mcp/server.py`: thin FastMCP adapters, validation, thread
+  offloading, and safe write completion handling.
+- `src/myfitnesspal_mcp/service.py`: central freshness, acquisition,
+  synchronization, retry, and archive orchestration.
+- `src/myfitnesspal_mcp/acquisition.py`: MyFitnessPal-specific read adapter
+  producing secret-free portable data models.
+- `src/myfitnesspal_mcp/freshness.py`: configurable mutable-history policy.
+- `src/myfitnesspal_mcp/rate_limit.py`: process-wide upstream request pacing.
 - `src/myfitnesspal_mcp/diary.py`: MyFitnessPal HTML parsing and diary/note/
   weight read-write requests.
 - `src/myfitnesspal_mcp/mfp_client.py`: cookie-backed client construction,
   Cloudflare-compatible HTTP session, client caching, and auth-error detection.
-- `src/myfitnesspal_mcp/sync.py`: component-aware diary cache synchronization,
-  including explicit date ranges and a 24-hour historical-component TTL.
-- `src/myfitnesspal_mcp/store.py`: SQLite schema, persistence/query methods,
-  and cache-account binding safeguards.
+- `src/myfitnesspal_mcp/sync.py`: legacy compatibility wrappers over the
+  service layer.
+- `src/myfitnesspal_mcp/store.py`: SQLite migrations, canonical archive,
+  persistence/query methods, and cache-account binding safeguards.
 - `src/myfitnesspal_mcp/auth.py`: cookie parsing, validation, and local storage.
 - `src/myfitnesspal_mcp/refresh.py`: optional Playwright session refresh.
 - `src/myfitnesspal_mcp/config.py`: environment variables and platform-specific
   config/data paths.
-- `src/myfitnesspal_mcp/cli.py`: `serve`/`auth`/`migrate-cache` CLI and
-  stdio/HTTP transport.
+- `src/myfitnesspal_mcp/cli.py`: MCP transport plus direct sync/backfill CLI.
+- `src/myfitnesspal_mcp/publishers.py`: optional current-state publisher
+  protocol; no MQTT/HA dependency is required.
 - `tests/fixtures/`: synthetic MyFitnessPal HTML used by parser tests.
 - `server.json`: MCP Registry package metadata.
 
@@ -74,12 +80,13 @@ non-obvious interfaces, small functions, and descriptive pytest test names.
 - Treat authentication failures differently from parse or per-day failures.
   Auth-shaped errors must propagate to the refresh layer; expected sync
   failures may be logged and skipped by `tolerating_failures()`.
-- Preserve cache behavior: the default window is exactly 30 calendar days
-  including today; today is re-fetched; historical nutrition/diary, note, and
-  measurement components are fresh for 24 hours when complete. Explicit-range
-  reads must evaluate every requested day rather than falling back to a
-  lookback window. `fitness_bulk_export(sync_first=True)` deliberately forces
-  that whole range to refresh.
+- Preserve centralized freshness behavior: by default today is re-fetched,
+  yesterday/recent mutable history is fresh for 24 hours, and cached dates
+  outside the 30-day mutable window are local-only unless forced. Explicit
+  ranges must evaluate every requested day. `fitness_bulk_export(sync_first=True)`
+  deliberately forces that whole range to refresh.
+- All MyFitnessPal requests must use the shared limiter. Do not bypass it from
+  backfill, retries, CLI, MCP, or a new acquisition helper.
 - Keep cache data account-safe. Never silently claim a legacy unbound cache or
   overwrite a different account's cache. The explicit
   `mfp-mcp migrate-cache --username NAME` path copies the legacy cache into the

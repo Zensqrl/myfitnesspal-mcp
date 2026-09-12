@@ -7,7 +7,8 @@ from typing import Any, Callable
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
-from . import auth, config, diary, mfp_client, refresh, sync
+from . import auth, config, diary, mfp_client, refresh
+from .service import NutritionService
 from .store import Store, trend_column
 
 mcp = FastMCP("myfitnesspal")
@@ -115,7 +116,10 @@ def _positive_finite(value: float, name: str) -> float:
 async def _refresh_after_write(store: Store, client: Any, day: datetime.date) -> list[str]:
     """Best-effort cache repair; a refresh failure cannot undo a remote write."""
     try:
-        return await asyncio.to_thread(sync.refresh_day, store, client, day)
+        result = await asyncio.to_thread(
+            NutritionService(store).get_day, day, force=True
+        )
+        return result.warnings
     except Exception:
         return ["MyFitnessPal was updated, but the local cache refresh failed"]
 
@@ -148,14 +152,12 @@ async def fitness_get_day(date: str | None = None, ctx: Context = None) -> dict:
     """
     day = parse_day(date)
 
-    def op(store, client):
-        warnings = sync.poll(store, client, start=day, end=day)
-        result = store.day_record(day.isoformat())
-        if warnings:
-            result["warnings"] = warnings
-        return result
-
-    return await with_session(ctx, op)
+    service = NutritionService(get_store(auth.saved_username()))
+    result = await asyncio.to_thread(service.get_day, day)
+    response = result.data
+    if result.warnings:
+        response["warnings"] = result.warnings
+    return response
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
@@ -334,12 +336,13 @@ async def fitness_get_note(date: str | None = None, ctx: Context = None) -> dict
     """
     day = parse_day(date)
 
-    def op(store, client):
-        body = diary.get_note(client, day)
-        store.set_note(day.isoformat(), body)
-        return {"day": day.isoformat(), "note": body}
-
-    return await with_session(ctx, op)
+    result = await asyncio.to_thread(
+        NutritionService(get_store(auth.saved_username())).get_day, day
+    )
+    response = {"day": day.isoformat(), "note": result.data["note"]}
+    if result.warnings:
+        response["warnings"] = result.warnings
+    return response
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
@@ -394,17 +397,14 @@ async def fitness_get_trends(
     trend_column(metric)
     start_day, end_day = parse_range(start, end)
 
-    def op(store, client):
-        warnings = sync.poll(store, client, start=start_day, end=end_day)
-        result = {
-            "metric": metric,
-            "points": store.trend(metric, start_day.isoformat(), end_day.isoformat()),
-        }
-        if warnings:
-            result["warnings"] = warnings
-        return result
-
-    return await with_session(ctx, op)
+    service = NutritionService(get_store(auth.saved_username()))
+    points, warnings = await asyncio.to_thread(
+        service.get_trend, metric, start_day, end_day
+    )
+    result = {"metric": metric, "points": points}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
@@ -423,17 +423,10 @@ async def fitness_bulk_export(
     start_day, end_day = parse_range(start, end)
 
     def op():
-        if sync_first:
-            client = mfp_client.get_client()
-            store = _store_for_client(client)
-            warnings = sync.poll(
-                store, client, force=True,
-                start=start_day, end=end_day,
-            )
-        else:
-            store = get_store(auth.saved_username())
-            warnings = []
-        days = store.export_range(start_day.isoformat(), end_day.isoformat())
+        service = NutritionService(get_store(auth.saved_username()))
+        days, warnings = service.export_range(
+            start_day, end_day, sync_first=sync_first
+        )
         result = {
             "start": start_day.isoformat(),
             "end": end_day.isoformat(),
@@ -444,4 +437,4 @@ async def fitness_bulk_export(
             result["warnings"] = warnings
         return result
 
-    return await run_with_refresh(ctx, op)
+    return await asyncio.to_thread(op)

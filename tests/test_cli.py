@@ -73,3 +73,14 @@ def test_migrate_cache_failure_removes_only_created_destination(
     assert cli.migrate_cache("somebody") == 1
     assert source.exists()
     assert not destination.exists()
+
+
+def test_sync_and_backfill_commands_parse():
+    parser = cli._build_parser()
+    sync = parser.parse_args(["sync", "range", "2024-06-01", "2024-06-30", "--force"])
+    assert sync.command == "sync"
+    assert sync.sync_command == "range"
+    assert sync.force is True
+    backfill = parser.parse_args(["backfill", "2020-01-01", "2024-12-31"])
+    assert backfill.command == "backfill"
+    assert backfill.start.isoformat() == "2020-01-01"

@@ -134,20 +134,39 @@ again. Replacing a food is a delete-then-add operation and can report a
 Water appears in day summaries but is read-only. MyFitnessPal's known
 `/food/water` POST does not persist changes.
 
-## Cache synchronization
+## Local archive and synchronization
 
-Day summaries, trends, and exports use a local SQLite cache. The default sync
-range is exactly 30 calendar days including today. `fitness_get_day` refreshes
-only the day requested. Trend requests evaluate their explicit inclusive
-`start`/`end` range; if omitted, the default is the last 30 days ending today.
+SQLite is the durable local archive. MCP tools and direct CLI jobs share the
+same service, freshness policy, acquisition code, and transactional persistence.
+Every successful upstream daily retrieval is archived before it is returned.
+The archive retains normalized nutrition/food data plus sanitized, minimally
+transformed raw snapshots, so historical data remains useful if MyFitnessPal
+access later stops working. See [the data service guide](docs/data-service.md)
+for the architecture, schema, backup guidance, and direct Python use.
 
-Today is refreshed live. Complete historical nutrition/diary, note, and
-measurement components are reused for up to 24 hours. Their completion is
-tracked separately, but a stale diary/nutrition or note component refreshes
-that day's nutrition/diary and note fetches together.
-`fitness_bulk_export(sync_first=true)` forces every day in its explicit
-inclusive range to refresh; leaving `sync_first` false exports only what is
-already cached.
+Today is refreshed live by default. Yesterday and dates inside the configurable
+30-day mutable window are reconciled after 24 hours. Cached dates older than
+that window are returned locally without contacting MyFitnessPal unless forced.
+If a refresh fails, prior archive data remains available with a warning.
+`fitness_bulk_export(sync_first=true)` forces every day in its explicit range;
+leaving it false exports only local data.
+
+### Scheduled sync and historical backfill
+
+The service can run without MCP or AI:
+
+```bash
+mfp-mcp sync today
+mfp-mcp sync recent --days 7
+mfp-mcp sync date 2024-06-14
+mfp-mcp sync range 2024-06-01 2024-06-30
+mfp-mcp backfill 2020-01-01 2024-12-31
+```
+
+Backfill is sequential, resumable, idempotent, and uses conservative pacing for
+every upstream request. It skips successfully archived immutable dates unless
+`--force` is supplied, records failures, and exits nonzero when a requested day
+cannot be synchronized.
 
 ### Cache accounts and legacy migration
 
@@ -185,10 +204,25 @@ behind a VPN, authenticated reverse proxy, or OAuth-aware MCP gateway.
 | `MFP_REQUEST_TIMEOUT` | Finite per-request HTTP timeout in seconds, greater than 0 and at most 300 | `30` |
 | `MFP_SYNC_DAYS` | Default gap-fill lookback in days | `30` |
 | `MFP_MCP_DATA_DIR` | Root for local SQLite caches and browser profiles | platform data directory |
+| `MFP_DATABASE_PATH` | Optional explicit SQLite file; overrides data directory | none |
+| `MFP_TODAY_TTL_SECONDS` | Freshness TTL for today; `0` refreshes every read | `0` |
+| `MFP_YESTERDAY_TTL_HOURS` | Freshness TTL for yesterday | `24` |
+| `MFP_RECENT_TTL_HOURS` | Freshness TTL inside mutable history | `24` |
+| `MFP_MUTABLE_HISTORY_DAYS` | Cached dates older than this are immutable by default | `30` |
+| `MFP_RATE_LIMIT_REQUESTS_PER_MINUTE` | Process-wide upstream request rate; `0` disables pacing | `6` |
+| `MFP_RATE_LIMIT_BURST` | Maximum immediate request burst | `1` |
+| `MFP_RATE_LIMIT_JITTER_SECONDS` | Random delay added to requests | `2` |
+| `MFP_RETRY_ATTEMPTS` | Total attempts for transient sync failures | `2` |
+| `MFP_RETRY_BACKOFF_SECONDS` | Initial retry delay; later attempts back off exponentially | `2` |
+| `MFP_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` | `WARNING` |
 
 When `MFP_MCP_DATA_DIR` points to a directory you chose, the server does not
 change that root directory's ACL or permissions. It does secure
 application-created subdirectories.
+
+For Docker, mount a persistent volume at `/data` and set
+`MFP_DATABASE_PATH=/data/mfp.sqlite3`. The existing account-scoped directory
+layout also works with `MFP_MCP_DATA_DIR=/data`.
 
 ## Troubleshooting
 

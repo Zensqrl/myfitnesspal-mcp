@@ -4,6 +4,7 @@ import pytest
 from myfitnesspal.exceptions import MyfitnesspalLoginError
 
 from myfitnesspal_mcp import mfp_client, server
+from myfitnesspal_mcp.models import ServiceDayResult
 from myfitnesspal_mcp.store import Store
 
 
@@ -108,10 +109,14 @@ def test_log_food_does_not_replay_write_when_cache_refresh_auth_fails(
             "matched": "Banana", "food_id": "111"
         }
     )
-    monkeypatch.setattr(
-        server.sync, "refresh_day",
-        lambda *args: (_ for _ in ()).throw(MyfitnesspalLoginError("expired")),
-    )
+    class BrokenService:
+        def __init__(self, store):
+            assert store is local_store
+
+        def get_day(self, day, force=False):
+            raise MyfitnesspalLoginError("expired")
+
+    monkeypatch.setattr(server, "NutritionService", BrokenService)
 
     result = asyncio.run(server.fitness_log_food("banana"))
     assert len(commits) == 1
@@ -226,20 +231,24 @@ def test_bulk_export_reads_cache_without_client(local_store):
     assert result["days"][0]["nutrition"]["calories"] == 1500.0
 
 
-def test_get_day_syncs_requested_day_once_including_measurements(local_store, monkeypatch):
-    class Client:
-        effective_username = "test-user"
-
-    monkeypatch.setattr(server, "_store_account", server.config.account_key("test-user"))
-    monkeypatch.setattr(server.mfp_client, "get_client", lambda: Client())
+def test_get_day_delegates_to_nutrition_service(local_store, monkeypatch):
     calls = []
 
-    def poll(store, client, **kwargs):
-        calls.append(kwargs)
-        store.upsert_nutrition("2026-07-08", weight=175.0)
-        return []
+    class FakeService:
+        def __init__(self, store):
+            assert store is local_store
 
-    monkeypatch.setattr(server.sync, "poll", poll)
+        def get_day(self, day):
+            calls.append(day)
+            return ServiceDayResult(
+                data={
+                    "day": day.isoformat(), "nutrition": {"weight": 175.0},
+                    "diary": [], "note": None, "feel": None,
+                },
+                source="cache", retrieved_at=None,
+            )
+
+    monkeypatch.setattr(server, "NutritionService", FakeService)
     result = asyncio.run(server.fitness_get_day("2026-07-08"))
-    assert calls == [{"start": server.parse_day("2026-07-08"), "end": server.parse_day("2026-07-08")}]
+    assert calls == [server.parse_day("2026-07-08")]
     assert result["nutrition"]["weight"] == 175.0

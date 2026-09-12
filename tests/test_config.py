@@ -31,3 +31,26 @@ def test_database_paths_are_account_specific(tmp_path, monkeypatch):
     assert alice != bob
     assert alice.name == bob.name == "data.db"
     assert config.legacy_database_path() == tmp_path / "data.db"
+
+
+def test_explicit_database_path_overrides_account_directory(tmp_path, monkeypatch):
+    path = tmp_path / "archive" / "mfp.sqlite3"
+    monkeypatch.setenv("MFP_DATABASE_PATH", str(path))
+    assert config.database_path("Alice") == path
+    assert path.parent.is_dir()
+
+
+@pytest.mark.parametrize("name,value", [
+    ("MFP_RATE_LIMIT_REQUESTS_PER_MINUTE", "-1"),
+    ("MFP_RATE_LIMIT_JITTER_SECONDS", "-1"),
+    ("MFP_MUTABLE_HISTORY_DAYS", "0"),
+])
+def test_new_configuration_rejects_invalid_values(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    functions = {
+        "MFP_RATE_LIMIT_REQUESTS_PER_MINUTE": config.rate_limit_requests_per_minute,
+        "MFP_RATE_LIMIT_JITTER_SECONDS": config.rate_limit_jitter_seconds,
+        "MFP_MUTABLE_HISTORY_DAYS": config.mutable_history_days,
+    }
+    with pytest.raises(ValueError, match=name):
+        functions[name]()

@@ -8,6 +8,7 @@ from curl_cffi import requests as cffi_requests
 from myfitnesspal.exceptions import MyfitnesspalLoginError
 
 from . import auth, config
+from .rate_limit import RateLimitedSession, RequestRateLimiter
 
 RECONNECT_HINT = (
     "MyFitnessPal session expired or not connected. "
@@ -67,10 +68,11 @@ class CurlCffiClient(myfitnesspal.Client):
         self._request_counter = 0
         self._log_requests_to = None
         self.unit_aware = False
-        self.session = cffi_requests.Session(
+        session = cffi_requests.Session(
             impersonate=impersonate or config.impersonate(),
             timeout=config.request_timeout(),
         )
+        self.session = RateLimitedSession(session, get_request_limiter())
         self.session.cookies.update(cookiejar)
         try:
             self._auth_data = self._get_auth_data()
@@ -138,6 +140,19 @@ def build_client(
 
 _client: CurlCffiClient | None = None
 _client_key: str | None = None
+_request_limiter: RequestRateLimiter | None = None
+
+
+def get_request_limiter() -> RequestRateLimiter:
+    """Return the process-wide limiter used by every MFP HTTP session."""
+    global _request_limiter
+    if _request_limiter is None:
+        _request_limiter = RequestRateLimiter(
+            config.rate_limit_requests_per_minute(),
+            burst=config.rate_limit_burst(),
+            jitter_seconds=config.rate_limit_jitter_seconds(),
+        )
+    return _request_limiter
 
 
 def _credentials_key(cookies: dict[str, str], username: str | None) -> str:
