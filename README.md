@@ -1,35 +1,22 @@
 # myfitnesspal-mcp
 
 Connect MyFitnessPal to Claude or any MCP client. Log meals by talking, search
-the food database with macros, track trends, and export your nutrition history, all against your real MyFitnessPal diary.
+the food database with macros, track trends, and export nutrition history from
+your real MyFitnessPal diary.
 
 Published on PyPI as [`mfp-mcp`](https://pypi.org/project/mfp-mcp/).
 
 <!-- mcp-name: io.github.Mason-Levyy/mfp-mcp -->
 
-> **Unofficial.** MyFitnessPal has no public API; this reverse-engineers the
-> web app's own endpoints. It can break whenever MFP changes their site. Use at
-> your own risk, with your own account.
+> **Unofficial.** MyFitnessPal has no public API. This server uses web app
+> endpoints that can change at any time. Use it with your own account and at
+> your own risk.
 
 ![quick demo](demo.gif)
 
-## Why this one?
-
-MyFitnessPal moved behind Cloudflare + NextAuth, which broke the
-username/password login that most existing integrations rely on. This server:
-
-- **Authenticates with your browser session cookie** over a real Chrome TLS
-  fingerprint ([curl_cffi](https://github.com/lexiforest/curl_cffi)), which
-  passes Cloudflare.
-- **Auto-refreshes the session** (optional): a headless browser profile rotates
-  the token when it expires, and failed calls retry automatically.
-- **Writes, not just reads**: log, modify, and delete real diary entries.
-- **Search-then-log**: get candidates with macros, then log the exact item.
-
 ## Quickstart
 
-1. Connect your account (one-time; prompts you to paste a cookie — see
-   [Authentication](#authentication)):
+1. Connect your account once by pasting its session cookie:
 
    ```bash
    uvx mfp-mcp auth
@@ -56,74 +43,163 @@ username/password login that most existing integrations rely on. This server:
    }
    ```
 
-3. Talk to it: *"log a banana as a snack"*, *"what did I eat yesterday?"*,
-   *"chart my weight this month"*.
+Requires [uv](https://docs.astral.sh/uv/). Any MCP client supporting stdio or
+streamable HTTP works.
 
-Requires [uv](https://docs.astral.sh/uv/). Any MCP client that speaks stdio or
-streamable HTTP works, not just Claude.
+### Run a local checkout
+
+`uvx mfp-mcp` runs the published package, not uncommitted local fixes. To run
+this checkout instead, use Python 3.13 explicitly (the version currently tested
+by this project):
+
+```bash
+uv --directory <checkout> run mfp-mcp
+# Example:
+uv --directory D:/github_personal/MyFitnessPal-mcp run mfp-mcp
+```
+
+For an MCP client, set the command to `uv` and its arguments to
+`--directory`, `<checkout>`, `run`, `--python`, `3.13`, `mfp-mcp` (use the
+example path above when applicable). Run the following for local guided
+authentication:
+
+```bash
+uv --directory <checkout> run mfp-mcp auth
+```
+
+Example:
+```bash
+uv --directory . run --python 3.13 mfp-mcp auth
+```
+
+When your shell is already in the checkout, `.` can replace `<checkout>`.
+Running bare `mfp-mcp` may select an older copy installed in the active Python
+or pyenv environment instead of this checkout.
 
 ## Authentication
 
-MyFitnessPal killed headless password login, so this uses your browser's
-session cookie:
+MyFitnessPal no longer supports the old headless password login. Use a browser
+session cookie instead:
 
 1. Log in at [myfitnesspal.com](https://www.myfitnesspal.com).
-2. Open DevTools (F12) → **Application** (Chrome) or **Storage** (Firefox) →
-   **Cookies** → `https://www.myfitnesspal.com`.
+2. Open DevTools (F12), then **Application** (Chrome) or **Storage**
+   (Firefox), then **Cookies** for `https://www.myfitnesspal.com`.
 3. Copy the value of `__Secure-next-auth.session-token`.
-4. Paste it into the `mfp-mcp auth` prompt (input is hidden).
+4. Paste it into the `mfp-mcp auth` prompt. Input is hidden in a terminal.
 
-Pasting the entire `Cookie:` header from any request in the Network tab also
-works. Cookies are stored with owner-only permissions in your platform config
-dir, or supply them via the `MFP_COOKIE` environment variable instead.
+A complete `Cookie:` header from the Network tab also works. Saved credentials
+are written atomically. The cookie file is restricted to the current user,
+including a Windows ACL; application-created config, account, and profile
+directories are also private. Use `MFP_COOKIE` instead if you do not want a
+saved cookie.
 
-Sessions last around 30 days. When one expires, either re-run `auth` — or
-enable auto-refresh so you never have to.
+Sessions last about 30 days. Re-run `auth` when one expires, or enable
+auto-refresh.
 
-### Auto-refresh (recommended)
+### Auto-refresh
 
-With the `autorefresh` extra, `auth` also seeds a persistent headless browser
-profile. When MyFitnessPal rejects the session mid-call, the server tells your
-client it is retrying, boots the profile headlessly, lets MyFitnessPal rotate
-the session token, saves the fresh cookie, and retries the call.
+With the `autorefresh` extra, `auth` seeds a persistent headless browser
+profile. If MyFitnessPal rejects a read, the server refreshes the session,
+saves the cookie, and retries that read once.
+
+Submitted mutations are deliberately never replayed: retrying a food, weight,
+or note submission could duplicate or otherwise alter a real diary entry.
+Preparation before submission can use the normal authenticated read path.
 
 ```bash
 uvx --from 'mfp-mcp[autorefresh]' playwright install chromium
 uvx --from 'mfp-mcp[autorefresh]' mfp-mcp auth
 ```
 
-Then use the same `--from 'mfp-mcp[autorefresh]'` form in your client config
-(e.g. `uvx --from 'mfp-mcp[autorefresh]' mfp-mcp`).
+Use the same `--from 'mfp-mcp[autorefresh]'` form in your client configuration.
 
 ## Tools
 
 | Tool | What it does |
 | --- | --- |
-| `fitness_get_day` | Nutrition totals, diary entries, the MFP daily note, and feel note for a day |
-| `fitness_search_food` | Candidate matches with brand, calories, macros, serving, and ids |
-| `fitness_log_food` | Log a food to the real diary (top match, or an exact search candidate) |
+| `fitness_get_day` | Nutrition totals, diary entries, MFP daily note, and feel note for one day |
+| `fitness_search_food` | Candidate matches with brand, calories, macros, serving, and IDs |
+| `fitness_log_food` | Log a food to the real diary (top match or exact search candidate) |
 | `fitness_delete_food` | Remove a diary entry by name match |
-| `fitness_modify_food` | Replace an entry (or change its quantity) |
+| `fitness_modify_food` | Replace an entry or change its quantity |
 | `fitness_log_weight` | Log a weight measurement (updates the same day on re-log) |
-| `fitness_get_exercise` | Read the exercise diary (cardio + strength) |
-| `fitness_get_note` | Read the MyFitnessPal daily diary note (the "Notes" box) for a day |
-| `fitness_log_note` | Write that daily note to MFP (replace, or `append` a new line) |
-| `fitness_log_feel` | Save a subjective "how I feel" note (stored locally, never sent to MFP) |
+| `fitness_get_exercise` | Read the exercise diary (cardio and strength) |
+| `fitness_get_note` | Read the MyFitnessPal daily diary note |
+| `fitness_log_note` | Write that daily note (replace or append) |
+| `fitness_log_feel` | Save a subjective local-only note |
 | `fitness_get_trends` | One metric over a date range: weight, calories_in, protein, carbs, fat |
-| `fitness_bulk_export` | Whole date range in one call, for analysis |
+| `fitness_bulk_export` | Export a whole date range for analysis |
 
-The high-accuracy logging flow: `fitness_search_food("greek yogurt")` returns
-candidates with macros and a `food_id`/`weight_id`; pass those to
-`fitness_log_food` to log exactly that item instead of trusting the top match.
+For high-accuracy logging, call `fitness_search_food("greek yogurt")`, then
+pass the selected candidate's `food_id` and `weight_id` to
+`fitness_log_food`. This avoids relying on the top search result.
 
-Day summaries and trends read from a local SQLite cache that gap-fills from
-MyFitnessPal (first call on a fresh install fetches up to 30 days, one request
-per day — subsequent calls are fast).
+### Write results and errors
 
-Water intake is read-only (it appears in day summaries): MyFitnessPal's water
-*write* isn't exposed on any endpoint we've found — `/food/water` accepts POSTs
-but ignores them. If you capture the real call in your browser, a PR is very
-welcome.
+After a confirmed MyFitnessPal write, the server repairs its local cache
+best-effort. A successful response can include `ok: true` and a `warnings`
+array when that cache repair fails; the remote update still succeeded.
+
+An error saying the submission outcome is **uncertain** means a transport
+failure happened after a submission started. Check MyFitnessPal before trying
+again. Replacing a food is a delete-then-add operation and can report a
+**partial** mutation when removal completed but the replacement add failed.
+
+Water appears in day summaries but is read-only. MyFitnessPal's known
+`/food/water` POST does not persist changes.
+
+## Local archive and synchronization
+
+SQLite is the durable local archive. MCP tools and direct CLI jobs share the
+same service, freshness policy, acquisition code, and transactional persistence.
+Every successful upstream daily retrieval is archived before it is returned.
+The archive retains normalized nutrition/food data plus sanitized, minimally
+transformed raw snapshots, so historical data remains useful if MyFitnessPal
+access later stops working. See [the data service guide](docs/data-service.md)
+for the architecture, schema, backup guidance, and direct Python use.
+
+Today is refreshed live by default. Yesterday and dates inside the configurable
+30-day mutable window are reconciled after 24 hours. Cached dates older than
+that window are returned locally without contacting MyFitnessPal unless forced.
+If a refresh fails, prior archive data remains available with a warning.
+`fitness_bulk_export(sync_first=true)` forces every day in its explicit range;
+leaving it false exports only local data.
+
+### Scheduled sync and historical backfill
+
+The service can run without MCP or AI:
+
+```bash
+uv run mfp-mcp sync today
+uv run mfp-mcp sync recent --days 7
+uv run mfp-mcp sync date 2024-06-14
+uv run mfp-mcp sync range 2024-06-01 2024-06-30
+uv run mfp-mcp backfill 2020-01-01 2024-12-31
+```
+
+These commands intentionally execute the current checkout. If you installed a
+release that contains these commands, the shorter `mfp-mcp ...` form is also
+valid. Sync and backfill print progress to the terminal before each potentially
+slow upstream fetch, retry, and archive update.
+
+Backfill is sequential, resumable, idempotent, and uses conservative pacing for
+every upstream request. It skips successfully archived immutable dates unless
+`--force` is supplied, records failures, and exits nonzero when a requested day
+cannot be synchronized.
+
+### Cache accounts and legacy migration
+
+Cache and browser-profile storage are account-scoped so one account's history
+is not reused for another. Existing unbound legacy `data.db` files are never
+claimed implicitly. To copy one into the selected account cache, run:
+
+```bash
+mfp-mcp migrate-cache --username NAME
+```
+
+`NAME` is your MyFitnessPal username. This explicit copy migration binds the
+copied cache to the normalized account, preserves the legacy source, and
+refuses to overwrite an existing account cache.
 
 ## Remote / HTTP mode
 
@@ -133,58 +209,58 @@ The default transport is stdio. For network clients:
 mfp-mcp --http --host 127.0.0.1 --port 8484
 ```
 
-This serves streamable HTTP at `/mcp`. **There is no built-in authentication —
-never expose it to the internet.** Bind to localhost and front it with
-something that authenticates for you: a VPN/tailnet (e.g. `tailscale serve`),
-an authenticating reverse proxy, or an OAuth-aware MCP gateway.
+This serves streamable HTTP at `/mcp`. There is no built-in authentication, so
+never expose it directly to the internet. Keep it on localhost or place it
+behind a VPN, authenticated reverse proxy, or OAuth-aware MCP gateway.
 
 ## Configuration
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `MFP_COOKIE` | Session cookie (full header or bare token); overrides the saved file | – |
-| `MFP_USERNAME` | Your MFP username (not email); only needed if profile lookup fails | auto-detected |
-| `MFP_IMPERSONATE` | curl_cffi browser fingerprint (try `chrome124` on 403s) | `chrome` |
-| `MFP_SYNC_DAYS` | Gap-fill lookback window in days | `30` |
-| `MFP_MCP_DATA_DIR` | Where the SQLite cache + browser profile live | platform data dir |
+| `MFP_COOKIE` | Session cookie (full header or bare token); overrides saved credentials | none |
+| `MFP_USERNAME` | MyFitnessPal username, not email; used if profile lookup fails | auto-detected |
+| `MFP_IMPERSONATE` | curl_cffi browser fingerprint; try `chrome124` for some 403s | `chrome` |
+| `MFP_REQUEST_TIMEOUT` | Finite per-request HTTP timeout in seconds, greater than 0 and at most 300 | `30` |
+| `MFP_SYNC_DAYS` | Default gap-fill lookback in days | `30` |
+| `MFP_MCP_DATA_DIR` | Root for local SQLite caches and browser profiles | platform data directory |
+| `MFP_DATABASE_PATH` | Optional explicit SQLite file; overrides data directory | none |
+| `MFP_TODAY_TTL_SECONDS` | Freshness TTL for today; `0` refreshes every read | `0` |
+| `MFP_YESTERDAY_TTL_HOURS` | Freshness TTL for yesterday | `24` |
+| `MFP_RECENT_TTL_HOURS` | Freshness TTL inside mutable history | `24` |
+| `MFP_MUTABLE_HISTORY_DAYS` | Cached dates older than this are immutable by default | `30` |
+| `MFP_RATE_LIMIT_REQUESTS_PER_MINUTE` | Process-wide upstream request rate; `0` disables pacing | `6` |
+| `MFP_RATE_LIMIT_BURST` | Maximum immediate request burst | `1` |
+| `MFP_RATE_LIMIT_JITTER_SECONDS` | Random delay added to requests | `2` |
+| `MFP_RETRY_ATTEMPTS` | Total attempts for transient sync failures | `2` |
+| `MFP_RETRY_BACKOFF_SECONDS` | Initial retry delay; later attempts back off exponentially | `2` |
+| `MFP_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` | `WARNING` |
+
+When `MFP_MCP_DATA_DIR` points to a directory you chose, the server does not
+change that root directory's ACL or permissions. It does secure
+application-created subdirectories.
+
+For Docker, mount a persistent volume at `/data` and set
+`MFP_DATABASE_PATH=/data/mfp.sqlite3`. The existing account-scoped directory
+layout also works with `MFP_MCP_DATA_DIR=/data`.
 
 ## Troubleshooting
 
-- **403 / Cloudflare blocked**: try `MFP_IMPERSONATE=chrome124` (or another
-  [curl_cffi target](https://github.com/lexiforest/curl_cffi#supported-browsers)).
-  Datacenter IPs get challenged far more than residential ones.
-- **"Session expired"**: re-run `mfp-mcp auth`, or set up
-  [auto-refresh](#auto-refresh-recommended).
-- **"couldn't read your MyFitnessPal profile"**: MFP's profile endpoint 500s
-  for some accounts. Set `MFP_USERNAME` to your username (not your email).
-- **curl_cffi install issues**: prebuilt wheels cover Linux/macOS/Windows;
-  musl (Alpine) builds from source.
-
-## How it works
-
-- [python-myfitnesspal](https://github.com/coddingtonbear/python-myfitnesspal)
-  parses the diary, measurements, and exercise pages — run over a `curl_cffi`
-  session that impersonates Chrome's TLS fingerprint so Cloudflare lets it
-  through with just the NextAuth session cookie.
-- Writes replicate the web app's own XHR calls: the legacy food-search page
-  supplies the `food_id`/`weight_id` that `/food/add` accepts, deletes go
-  through `/food/remove`, and the daily note reads/writes via `/food/note` —
-  each with the page CSRF token.
-- Day summaries, trends, and exports read a local SQLite cache that gap-fills
-  missing days. The MyFitnessPal daily note syncs both ways; feel notes are
-  local-only.
+- **403 / Cloudflare blocked:** Try `MFP_IMPERSONATE=chrome124` or another
+  supported [curl_cffi target](https://github.com/lexiforest/curl_cffi#supported-browsers).
+- **Session expired:** Re-run `mfp-mcp auth`, or install the auto-refresh extra.
+- **Profile lookup fails:** Set `MFP_USERNAME` to your username, not email.
 
 ## Development
 
 ```bash
-git clone https://github.com/Mason-Levyy/myfitnesspal-mcp
+git clone https://github.com/zensqrl/MyFitnessPal-mcp
 cd myfitnesspal-mcp
+uv python pin 3.13
 uv sync --extra autorefresh
 uv run pytest
 ```
 
-Tests run against synthetic MyFitnessPal HTML/JSON fixtures — no account
-needed.
+Tests use synthetic MyFitnessPal HTML and JSON fixtures. No account is needed.
 
 ## License
 

@@ -1,6 +1,11 @@
 import getpass
 import json
+import os
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
+from typing import Any
 
 from . import config
 
@@ -16,31 +21,61 @@ Connect your MyFitnessPal account
 """
 
 
+class CredentialError(RuntimeError):
+    """A safe-to-display error concerning locally stored credentials."""
+
+
 def parse_cookie_input(text: str) -> dict[str, str]:
     text = text.strip()
     if text.lower().startswith("cookie:"):
         text = text[len("cookie:"):].strip()
+    if not text:
+        return {}
     if "=" not in text:
         return {SESSION_COOKIE: text}
     cookies = {}
     for part in text.split(";"):
         if "=" in part:
             name, value = part.strip().split("=", 1)
-            cookies[name.strip()] = value.strip()
+            if name.strip() and value.strip():
+                cookies[name.strip()] = value.strip()
     return cookies
 
 
-def _read_saved() -> dict:
+def _validate_saved(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise CredentialError("saved credentials have an invalid format; run 'myfitnesspal-mcp auth'")
+    cookies = value.get("cookies")
+    if cookies is not None and (
+        not isinstance(cookies, dict)
+        or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v for k, v in cookies.items())
+    ):
+        raise CredentialError("saved credentials have invalid cookies; run 'myfitnesspal-mcp auth'")
+    username = value.get("username")
+    if username is not None and (not isinstance(username, str) or not username.strip()):
+        raise CredentialError("saved credentials have an invalid username; run 'myfitnesspal-mcp auth'")
+    return value
+
+
+def _read_saved() -> dict[str, Any]:
     path = config.cookies_path()
     if not path.exists():
         return {}
-    return json.loads(path.read_text())
+    try:
+        return _validate_saved(json.loads(path.read_text(encoding="utf-8")))
+    except CredentialError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CredentialError("could not read saved credentials; run 'myfitnesspal-mcp auth'") from exc
 
 
 def load_cookies() -> dict[str, str] | None:
     env = config.cookie_env()
     if env:
-        return parse_cookie_input(env)
+        cookies = parse_cookie_input(env)
+        if not cookies:
+            raise CredentialError("MFP_COOKIE does not contain a cookie")
+        return cookies
     saved = _read_saved().get("cookies")
     if saved:
         return saved
@@ -53,14 +88,50 @@ def saved_username() -> str | None:
     return _read_saved().get("username")
 
 
+def _restrict_windows(path: Path) -> None:
+    identity = subprocess.run(
+        ["whoami"], capture_output=True, text=True, check=False
+    )
+    principal = identity.stdout.strip()
+    if identity.returncode or not principal:
+        raise CredentialError("could not secure saved credentials")
+    result = subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{principal}:F"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
+    if result.returncode:
+        raise CredentialError("could not secure saved credentials")
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(temporary)
+    try:
+        os.chmod(temp_path, 0o600)
+        if os.name == "nt":
+            _restrict_windows(temp_path)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        if os.name != "nt":
+            path.chmod(0o600)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
 def save_cookies(cookies: dict[str, str], username: str | None = None) -> None:
+    if not cookies or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v for k, v in cookies.items()):
+        raise CredentialError("refusing to save invalid cookies")
     saved = _read_saved()
-    saved["cookies"] = cookies
+    saved["cookies"] = dict(cookies)
     if username:
-        saved["username"] = username
-    path = config.cookies_path()
-    path.write_text(json.dumps(saved, indent=2))
-    path.chmod(0o600)
+        saved["username"] = username.strip()
+    _validate_saved(saved)
+    _atomic_write(config.cookies_path(), json.dumps(saved, indent=2) + "\n")
 
 
 def read_cookie_paste() -> str:
@@ -74,15 +145,11 @@ def _validate(cookies: dict[str, str]):
     """Builds a client from the cookies; when only the profile lookup fails (a
     known MFP issue for accounts that log in by email), asks for the username
     and retries instead of failing the whole flow."""
-    from myfitnesspal.exceptions import MyfitnesspalLoginError
-
     from . import mfp_client
 
     try:
         return mfp_client.build_client(cookies)
-    except MyfitnesspalLoginError as exc:
-        if "profile" not in str(exc):
-            raise
+    except mfp_client.ProfileLookupError:
         if not sys.stdin.isatty():
             raise
         print(
@@ -92,8 +159,7 @@ def _validate(cookies: dict[str, str]):
         username = input("Your MyFitnessPal username (not email): ").strip()
         if not username:
             raise
-        save_cookies(cookies, username=username)
-        return mfp_client.build_client(cookies)
+        return mfp_client.build_client(cookies, username=username)
 
 
 def run_auth_flow() -> int:
@@ -113,29 +179,27 @@ def run_auth_flow() -> int:
         return 1
 
     cookies = parse_cookie_input(pasted)
+    if SESSION_COOKIE not in cookies:
+        print("The input did not contain a MyFitnessPal session cookie.", file=sys.stderr)
+        return 1
     print("Validating with MyFitnessPal...")
     try:
         client = _validate(cookies)
-    except Exception as exc:
-        print(f"Those cookies didn't authenticate: {exc}", file=sys.stderr)
-        print(
-            "If this mentions Cloudflare or a 403, try MFP_IMPERSONATE=chrome124 "
-            "or run from a residential IP.",
-            file=sys.stderr,
-        )
+    except Exception:
+        print("Those cookies did not authenticate. Check the cookie and try again.", file=sys.stderr)
         return 1
 
     save_cookies(cookies, username=client.effective_username)
     mfp_client.reset()
-    print(f"Connected as {client.effective_username}. Cookies saved to {config.cookies_path()}")
+    print(f"Connected as {client.effective_username}. Credentials saved securely.")
 
     if refresh.available():
         print("Seeding the browser profile for automatic session refresh...")
         try:
-            refresh.seed_profile(cookies)
-            print(f"Auto-refresh ready (profile at {refresh.profile_dir()}).")
-        except Exception as exc:
-            print(f"Could not seed the auto-refresh browser profile: {exc}", file=sys.stderr)
+            refresh.seed_profile(cookies, username=client.effective_username)
+            print("Auto-refresh ready.")
+        except Exception:
+            print("Could not seed automatic refresh; manual re-authentication remains available.", file=sys.stderr)
             print("The server still works; sessions just need a manual re-auth when they expire.")
     else:
         print(

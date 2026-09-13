@@ -13,6 +13,8 @@ from urllib import parse
 
 from lxml import html as lh
 
+from .mfp_client import AuthenticationError
+
 MEAL_INDEX = {"breakfast": "0", "lunch": "1", "dinner": "2", "snacks": "3", "snack": "3"}
 
 MEALS = ("breakfast", "lunch", "dinner", "snacks")
@@ -20,11 +22,44 @@ MEALS = ("breakfast", "lunch", "dinner", "snacks")
 MEAL_ALIASES = {"snack": "snacks"}
 
 
+class MutationOutcomeUncertain(RuntimeError):
+    """A write failed after submission, so the remote outcome is unknown."""
+
+
+class PartialMutation(RuntimeError):
+    """A multi-step write completed only some of its steps."""
+
+    def __init__(self, message: str, completed: list[str]):
+        self.completed = completed
+        super().__init__(message)
+
+
+def _raise_if_login_response(resp, *, submitted: bool = False) -> None:
+    final_url = str(getattr(resp, "url", "") or "").lower()
+    if "/account/login" in final_url or "/login" in final_url:
+        if submitted:
+            raise MutationOutcomeUncertain(
+                "MyFitnessPal redirected after submission; the write outcome is uncertain"
+            )
+        raise AuthenticationError("MyFitnessPal redirected to its login page")
+
+
 def _normalize_meal(meal: str | None) -> str | None:
     if meal is None:
         return None
     lowered = meal.lower()
     return MEAL_ALIASES.get(lowered, lowered)
+
+
+def normalize_meal(meal: str | None, *, optional: bool = False) -> str | None:
+    """Normalize and validate a meal supplied at the public boundary."""
+    normalized = _normalize_meal(meal)
+    if optional and normalized is None:
+        return None
+    if normalized not in MEALS:
+        allowed = "|".join((*MEALS, "snack"))
+        raise ValueError(f"meal must be one of: {allowed}")
+    return normalized
 
 
 def api_headers(client, extra: dict | None = None) -> dict:
@@ -69,6 +104,7 @@ def food_search(client, query: str):
     )
     resp = client.session.get(url, headers=api_headers(client))
     resp.raise_for_status()
+    _raise_if_login_response(resp)
     doc = lh.fromstring(resp.text)
     csrf = doc.xpath("//meta[@name='csrf-token']/@content")
     results = []
@@ -128,9 +164,10 @@ def search_food(client, query: str, limit: int = 5, with_macros: bool = True) ->
 
 
 def add_food_to_diary(client, food_id, weight_id, csrf, meal: str, day: date, quantity):
-    resp = client.session.post(
-        parse.urljoin(client.BASE_URL_SECURE, "food/add"),
-        data={
+    try:
+        resp = client.session.post(
+            parse.urljoin(client.BASE_URL_SECURE, "food/add"),
+            data={
             "food_entry[food_id]": str(food_id),
             "food_entry[date]": day.isoformat(),
             "food_entry[quantity]": str(quantity),
@@ -138,22 +175,27 @@ def add_food_to_diary(client, food_id, weight_id, csrf, meal: str, day: date, qu
             "food_entry[meal_id]": MEAL_INDEX.get(meal.lower(), "0"),
             "ajax": "true",
         },
-        headers=api_headers(
-            client,
-            {
+            headers=api_headers(
+                client,
+                {
                 "Accept": "application/json",
                 "X-CSRF-Token": csrf,
                 "Origin": "https://www.myfitnesspal.com",
                 "Referer": parse.urljoin(client.BASE_URL_SECURE, "food/search"),
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            },
-        ),
-    )
+                },
+            ),
+        )
+    except Exception as exc:
+        raise MutationOutcomeUncertain(
+            "food submission failed and its MyFitnessPal outcome is uncertain"
+        ) from exc
     if resp.status_code not in (200, 204):
         raise RuntimeError(f"MyFitnessPal /food/add returned HTTP {resp.status_code}")
+    _raise_if_login_response(resp, submitted=True)
 
 
-def push_food(
+def prepare_food(
     client,
     day: date,
     meal: str,
@@ -174,11 +216,30 @@ def push_food(
         weight_id = top["weight_id"]
         matched = top["name"]
     if not csrf:
-        raise RuntimeError(
+        raise AuthenticationError(
             "couldn't read the MyFitnessPal csrf token (try re-authenticating)"
         )
-    add_food_to_diary(client, food_id, weight_id, csrf, meal, day, quantity)
-    return {"matched": matched, "food_id": food_id}
+    return {
+        "matched": matched, "food_id": food_id, "weight_id": weight_id,
+        "csrf": csrf, "meal": meal, "day": day, "quantity": quantity,
+    }
+
+
+def commit_food(client, prepared: dict) -> dict:
+    add_food_to_diary(
+        client, prepared["food_id"], prepared["weight_id"], prepared["csrf"],
+        prepared["meal"], prepared["day"], prepared["quantity"],
+    )
+    return {"matched": prepared["matched"], "food_id": prepared["food_id"]}
+
+
+def push_food(
+    client, day: date, meal: str, query: str, quantity: float = 1.0,
+    food_id: str | None = None, weight_id: str | None = None,
+) -> dict:
+    return commit_food(
+        client, prepare_food(client, day, meal, query, quantity, food_id, weight_id)
+    )
 
 
 def diary_page(client, day: date):
@@ -188,10 +249,11 @@ def diary_page(client, day: date):
     )
     resp = client.session.get(url, headers=api_headers(client))
     resp.raise_for_status()
+    _raise_if_login_response(resp)
     doc = lh.fromstring(resp.text)
     tokens = doc.xpath("//meta[@name='csrf-token']/@content")
     if not tokens:
-        raise RuntimeError("couldn't read the MyFitnessPal csrf token")
+        raise AuthenticationError("couldn't read the MyFitnessPal csrf token")
     return doc, tokens[0]
 
 
@@ -232,19 +294,25 @@ def find_entries(entries: list[dict], query: str, meal: str | None = None) -> li
 
 
 def remove_entry(client, entry_id: str, token: str) -> None:
-    resp = client.session.post(
-        parse.urljoin(client.BASE_URL_SECURE, f"food/remove/{entry_id}"),
-        data={"_method": "delete", "authenticity_token": token},
-        headers={
+    try:
+        resp = client.session.post(
+            parse.urljoin(client.BASE_URL_SECURE, f"food/remove/{entry_id}"),
+            data={"_method": "delete", "authenticity_token": token},
+            headers={
             "Content-Type": "application/x-www-form-urlencoded",
             "Origin": "https://www.myfitnesspal.com",
             "Referer": parse.urljoin(
                 client.BASE_URL_SECURE, f"food/diary/{client.effective_username}"
             ),
-        },
-    )
+            },
+        )
+    except Exception as exc:
+        raise MutationOutcomeUncertain(
+            "food removal failed and its MyFitnessPal outcome is uncertain"
+        ) from exc
     if resp.status_code not in (200, 204):
         raise RuntimeError(f"MyFitnessPal /food/remove returned HTTP {resp.status_code}")
+    _raise_if_login_response(resp, submitted=True)
 
 
 class NoMatchingEntry(RuntimeError):
@@ -287,6 +355,35 @@ def delete_food(client, day: date, query: str, meal: str | None = None) -> dict:
     return {"removed": entry["name"], "meal": entry["meal"]}
 
 
+def prepare_modify_food(
+    client, day: date, meal: str, query: str, new_query: str | None = None,
+    quantity: float = 1.0,
+) -> dict:
+    """Resolve both sides before the destructive portion begins."""
+    added = prepare_food(client, day, meal, new_query or query, quantity)
+    doc, token = diary_page(client, day)
+    removed = resolve_entry(diary_entries(doc), query, meal, day)
+    return {"removed": removed, "remove_csrf": token, "added": added, "meal": meal}
+
+
+def commit_modify_food(client, prepared: dict) -> dict:
+    removed = prepared["removed"]
+    remove_entry(client, removed["entry_id"], prepared["remove_csrf"])
+    try:
+        added = commit_food(client, prepared["added"])
+    except Exception as exc:
+        outcome = (
+            "the replacement outcome is uncertain"
+            if isinstance(exc, MutationOutcomeUncertain)
+            else "adding the replacement failed"
+        )
+        raise PartialMutation(
+            f"removed {removed['name']!r}, but {outcome}",
+            completed=[f"removed:{removed['entry_id']}"],
+        ) from exc
+    return {"removed": removed["name"], "added": added["matched"], "meal": prepared["meal"]}
+
+
 def modify_food(
     client,
     day: date,
@@ -295,28 +392,37 @@ def modify_food(
     new_query: str | None = None,
     quantity: float = 1.0,
 ) -> dict:
-    """Delete + add are sequential; if the add fails the delete has already
-    applied."""
-    removed = delete_food(client, day, query, meal)
-    added = push_food(client, day, meal, new_query or query, quantity)
-    return {"removed": removed["removed"], "added": added["matched"], "meal": meal}
+    return commit_modify_food(
+        client, prepare_modify_food(client, day, meal, query, new_query, quantity)
+    )
 
 
 def set_weight(client, day: date, value: float) -> dict:
     """Value is in the account's display unit (kg or lbs) — the v2 API stores
     and echoes whatever unit the account is configured with."""
-    resp = client.session.post(
-        parse.urljoin(client.BASE_API_URL, "v2/measurements"),
-        json={"items": [{"type": "Weight", "value": value, "date": day.isoformat()}]},
-        headers=api_headers(
-            client, {"Accept": "application/json", "Content-Type": "application/json"}
-        ),
-    )
+    try:
+        resp = client.session.post(
+            parse.urljoin(client.BASE_API_URL, "v2/measurements"),
+            json={"items": [{"type": "Weight", "value": value, "date": day.isoformat()}]},
+            headers=api_headers(
+                client, {"Accept": "application/json", "Content-Type": "application/json"}
+            ),
+        )
+    except Exception as exc:
+        raise MutationOutcomeUncertain(
+            "weight submission failed and its MyFitnessPal outcome is uncertain"
+        ) from exc
     if resp.status_code not in (200, 201):
         raise RuntimeError(
             f"MyFitnessPal /v2/measurements returned HTTP {resp.status_code}"
         )
-    item = resp.json()["items"][0]
+    _raise_if_login_response(resp, submitted=True)
+    try:
+        item = resp.json()["items"][0]
+    except Exception as exc:
+        raise MutationOutcomeUncertain(
+            "weight was submitted, but its MyFitnessPal response was invalid"
+        ) from exc
     return {"day": item["date"], "weight": item["value"], "unit": item.get("unit")}
 
 
@@ -332,6 +438,7 @@ def get_note(client, day: date) -> str | None:
         url, headers=api_headers(client, {"Accept": "application/json"})
     )
     resp.raise_for_status()
+    _raise_if_login_response(resp)
     item = (resp.json() or {}).get("item") or {}
     body = item.get("body")
     if not body:
@@ -342,36 +449,52 @@ def get_note(client, day: date) -> str | None:
 def set_note(client, day: date, body: str) -> dict:
     """Writes the day's diary note, replacing whatever was there. Mirrors the
     web app's Save Note request: a form POST with the page csrf token."""
+    return commit_note(client, prepare_note(client, day, body))
+
+
+def prepare_note(client, day: date, text: str, append: bool = False) -> dict:
     _, csrf = diary_page(client, day)
-    resp = client.session.post(
-        parse.urljoin(client.BASE_URL_SECURE, "food/note"),
-        data={"body": body, "date": day.isoformat()},
-        headers=api_headers(
-            client,
-            {
+    if append:
+        existing = get_note(client, day)
+        if existing:
+            text = f"{existing}\n{text}"
+    return {"day": day, "body": text, "csrf": csrf}
+
+
+def commit_note(client, prepared: dict) -> dict:
+    day = prepared["day"]
+    body = prepared["body"]
+    try:
+        resp = client.session.post(
+            parse.urljoin(client.BASE_URL_SECURE, "food/note"),
+            data={"body": body, "date": day.isoformat()},
+            headers=api_headers(
+                client,
+                {
                 "Accept": "*/*",
-                "X-CSRF-Token": csrf,
+                "X-CSRF-Token": prepared["csrf"],
                 "Origin": "https://www.myfitnesspal.com",
                 "Referer": parse.urljoin(
                     client.BASE_URL_SECURE, f"food/diary/{client.effective_username}"
                 ),
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            },
-        ),
-    )
+                },
+            ),
+        )
+    except Exception as exc:
+        raise MutationOutcomeUncertain(
+            "note submission failed and its MyFitnessPal outcome is uncertain"
+        ) from exc
     if resp.status_code not in (200, 201, 204):
         raise RuntimeError(f"MyFitnessPal /food/note returned HTTP {resp.status_code}")
+    _raise_if_login_response(resp, submitted=True)
     return {"day": day.isoformat(), "note": body}
 
 
 def push_note(client, day: date, text: str, append: bool = False) -> dict:
     """Writes `text` as the day's diary note. With append=True, keeps the
     existing note and adds `text` on a new line."""
-    if append:
-        existing = get_note(client, day)
-        if existing:
-            text = f"{existing}\n{text}"
-    return set_note(client, day, text)
+    return commit_note(client, prepare_note(client, day, text, append))
 
 
 def get_exercise(client, day: date) -> dict:

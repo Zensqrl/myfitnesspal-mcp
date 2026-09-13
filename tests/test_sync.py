@@ -109,13 +109,13 @@ def test_refresh_day_populates_store(store):
     assert store.note(TODAY.isoformat()) == "today felt great"
 
 
-def test_poll_skips_when_synced_today(store, monkeypatch):
+def test_poll_fetches_today_once_each_call(store, monkeypatch):
     client = FakeSyncClient()
     store.mark_synced(TODAY)
-    sync.poll(store, client, today=TODAY)
-    assert client.fetched == []
+    sync.poll(store, client, days=1, today=TODAY)
+    assert client.fetched == [TODAY]
     sync.poll(store, client, force=True, days=1, today=TODAY)
-    assert client.fetched != []
+    assert client.fetched == [TODAY, TODAY]
 
 
 def test_poll_records_weights(store):
@@ -135,10 +135,12 @@ def test_poll_backfills_weight_for_already_cached_day(store):
     yesterday = TODAY - datetime.timedelta(days=1)
     for day in (window_start, yesterday):
         store.upsert_nutrition(day.isoformat(), calories=2000.0)
+        store.mark_component(day.isoformat(), "nutrition_diary", complete=True)
+        store.mark_component(day.isoformat(), "note", complete=True)
 
     client = FakeSyncClient()
     client.weights = {yesterday: 79.5}
-    sync.poll(store, client, days=3, force=True, today=TODAY)
+    sync.poll(store, client, days=3, today=TODAY)
 
     assert client.fetched == [TODAY]
     assert client.measurements_earliest == window_start
@@ -165,3 +167,61 @@ def test_poll_skips_bad_days_without_auth_errors(store):
     client = FlakyClient()
     sync.poll(store, client, days=2, force=True)
     assert len(client.fetched) == 2
+
+
+def test_poll_range_is_inclusive_and_weight_only_day_is_refetched(store):
+    start = TODAY - datetime.timedelta(days=2)
+    store.upsert_nutrition(start.isoformat(), weight=79.0)
+    client = FakeSyncClient()
+    sync.poll(store, client, start=start, end=TODAY, today=TODAY)
+    assert client.fetched == [start, start + datetime.timedelta(days=1), TODAY]
+
+
+def test_incomplete_day_retries_but_fresh_complete_historical_day_skips(store):
+    yesterday = TODAY - datetime.timedelta(days=1)
+    store.mark_component(yesterday.isoformat(), "nutrition_diary", complete=False)
+    client = FakeSyncClient()
+    sync.poll(store, client, start=yesterday, end=yesterday, today=TODAY)
+    assert client.fetched == [yesterday]
+    client.fetched.clear()
+    sync.poll(store, client, start=yesterday, end=yesterday, today=TODAY)
+    assert client.fetched == []
+
+
+def test_refresh_failure_preserves_cached_day_and_returns_warning(store):
+    yesterday = TODAY - datetime.timedelta(days=1)
+    store.upsert_nutrition(yesterday.isoformat(), calories=123)
+    store.replace_diary(yesterday.isoformat(), [{"name": "Old"}])
+
+    class BrokenClient(FakeSyncClient):
+        def get_date(self, day):
+            raise ValueError("bad parse")
+
+    warnings = sync.poll(
+        store, BrokenClient(), start=yesterday, end=yesterday, today=TODAY
+    )
+    assert warnings and "sync for" in warnings[0]
+    assert store.nutrition(yesterday.isoformat())["calories"] == 123
+    assert store.diary(yesterday.isoformat())[0]["name"] == "Old"
+    assert store.component_status(yesterday.isoformat(), "nutrition_diary")["complete"] is False
+
+
+def test_note_failure_is_incomplete_and_retried(store):
+    yesterday = TODAY - datetime.timedelta(days=1)
+
+    class BrokenNoteSession(FakeNoteSession):
+        def get(self, url, **kwargs):
+            raise ValueError("note unavailable")
+
+    client = FakeSyncClient()
+    client.session = BrokenNoteSession(None)
+    warnings = sync.poll(store, client, start=yesterday, end=yesterday, today=TODAY)
+    assert any("note fetch" in warning for warning in warnings)
+    assert store.component_status(yesterday.isoformat(), "nutrition_diary")["complete"] is True
+    assert store.component_status(yesterday.isoformat(), "note")["complete"] is False
+
+    client.session = FakeNoteSession("recovered")
+    client.fetched.clear()
+    sync.poll(store, client, start=yesterday, end=yesterday, today=TODAY)
+    assert client.fetched == [yesterday]
+    assert store.note(yesterday.isoformat()) == "recovered"

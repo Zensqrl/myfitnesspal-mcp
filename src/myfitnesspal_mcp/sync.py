@@ -1,24 +1,24 @@
-import logging
-from contextlib import contextmanager
-from datetime import date, timedelta
+"""Compatibility helpers delegating synchronization to :mod:`service`.
 
-from . import config, diary
-from .mfp_client import is_auth_error
+New callers should construct ``NutritionService`` directly.  These functions
+retain the prior internal API while ensuring there is only one freshness and
+persistence implementation.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date, datetime, timedelta, timezone
+
+from . import config, mfp_client
+from .acquisition import MyFitnessPalAcquirer
+from .freshness import FreshnessPolicy
+from .service import NutritionService, inclusive_days
 from .store import Store
 
+
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def tolerating_failures(description: str):
-    """Auth failures propagate so the caller can refresh the session and retry;
-    everything else is logged and skipped."""
-    try:
-        yield
-    except Exception as exc:
-        if is_auth_error(exc):
-            raise
-        logger.warning("%s failed: %s", description, exc)
+HISTORICAL_TTL = timedelta(hours=24)  # backwards-compatible export
 
 
 def as_float(value) -> float | None:
@@ -38,13 +38,6 @@ def first_number(values: dict, *keys) -> float | None:
     return None
 
 
-def days_to_fetch(cached: set[str], lookback: int, today: date) -> list[date]:
-    """Today is always refetched because the diary is live; past days only when
-    the cache has no row for them."""
-    past = (today - timedelta(days=offset) for offset in range(1, lookback))
-    return [today] + [day for day in past if day.isoformat() not in cached]
-
-
 def macros(totals: dict) -> dict:
     return {
         "calories": first_number(totals, "calories"),
@@ -54,28 +47,28 @@ def macros(totals: dict) -> dict:
     }
 
 
-def refresh_day(store: Store, client, day: date) -> None:
-    mfp_day = client.get_date(day)
-    key = day.isoformat()
+def days_to_fetch(cached: set[str], lookback: int, today: date) -> list[date]:
+    past = (today - timedelta(days=offset) for offset in range(1, lookback))
+    return [today] + [day for day in past if day.isoformat() not in cached]
 
-    store.upsert_nutrition(
-        key,
-        **macros(mfp_day.totals),
-        water_ml=as_float(mfp_day.water),
-        goal_calories=first_number(mfp_day.goals or {}, "calories"),
+
+def _service(store: Store, client, today: date) -> NutritionService:
+    acquirer = MyFitnessPalAcquirer(
+        client_factory=lambda: client,
+        refresh_session=lambda: None,
+    )
+    return NutritionService(
+        store,
+        acquirer=acquirer,
+        policy=FreshnessPolicy.from_config(),
+        today=lambda: today,
+        now=lambda: datetime.now(timezone.utc),
+        retry_attempts=1,
     )
 
-    store.replace_diary(
-        key,
-        [
-            {"meal": str(meal.name).title(), "name": entry.name, **macros(entry.totals)}
-            for meal in mfp_day.meals
-            for entry in meal.entries
-        ],
-    )
 
-    with tolerating_failures(f"note fetch for {day}"):
-        store.set_note(key, diary.get_note(client, day))
+def refresh_day(store: Store, client, day: date) -> list[str]:
+    return _service(store, client, day).sync_day(day, force=True).warnings
 
 
 def poll(
@@ -84,25 +77,47 @@ def poll(
     days: int | None = None,
     force: bool = False,
     today: date | None = None,
-) -> None:
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[str]:
+    """Compatibility façade for callers migrating to ``NutritionService``."""
     today = today or date.today()
-    if not force and store.last_synced_on() == today.isoformat():
-        return
-
-    lookback = days or config.sync_days()
-    window_start = today - timedelta(days=lookback - 1)
-    cached = store.days_with_nutrition(
-        window_start.isoformat(), (today - timedelta(days=1)).isoformat()
-    )
-
-    for day in days_to_fetch(cached, lookback, today):
-        with tolerating_failures(f"sync for {day}"):
-            refresh_day(store, client, day)
-
-    with tolerating_failures("weight measurements"):
-        weights = client.get_measurements("Weight", window_start)
-        for day, value in weights.items():
-            if day >= window_start:
-                store.upsert_nutrition(day.isoformat(), weight=float(value))
-
+    if (start is None) != (end is None):
+        raise ValueError("start and end must be supplied together")
+    if start is None:
+        lookback = days or config.sync_days()
+        if lookback < 1:
+            raise ValueError("days must be at least 1")
+        start, end = today - timedelta(days=lookback - 1), today
+    assert start is not None and end is not None
+    service = _service(store, client, today)
+    warnings: list[str] = []
+    requested = inclusive_days(start, end)
+    for requested_day in requested:
+        try:
+            result = service.sync_day(requested_day, force=force)
+            warnings.extend(result.warnings)
+        except Exception as exc:
+            if mfp_client.is_auth_error(exc):
+                raise
+            warning = f"sync for {requested_day} failed"
+            logger.warning(warning)
+            warnings.append(warning)
+    try:
+        due = force or any(
+            not service.policy.is_immutable(day, today)
+            and service.policy.requires_refresh(
+                day, store.retrieved_at(day.isoformat(), "measurements"),
+                today=today, now=datetime.now(timezone.utc),
+            ) for day in requested
+        )
+        if due:
+            store.persist_weights(service.acquirer.fetch_weights(start, end), requested)
+    except Exception as exc:
+        if mfp_client.is_auth_error(exc):
+            raise
+        warnings.append("weight measurements failed")
+        logger.warning("weight measurements failed")
     store.mark_synced(today)
+    return warnings

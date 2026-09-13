@@ -32,6 +32,19 @@ def test_username_override_used_when_profile_fails(monkeypatch):
     assert captured["impersonate"] == "chrome124"
 
 
-def test_is_auth_error_matches_expired_language():
-    assert mfp_client.is_auth_error(RuntimeError("401 Unauthorized"))
+def test_is_auth_error_uses_typed_or_structured_signals():
+    assert mfp_client.is_auth_error(mfp_client.AuthenticationError("expired"))
+    exc = RuntimeError("request failed")
+    exc.status_code = 401
+    assert mfp_client.is_auth_error(exc)
+    assert not mfp_client.is_auth_error(RuntimeError("401 Unauthorized"))
     assert not mfp_client.is_auth_error(RuntimeError("no food found"))
+
+
+def test_reset_closes_cached_session(monkeypatch):
+    closed = []
+    fake = type("Client", (), {"session": type("Session", (), {"close": lambda self: closed.append(True)})()})()
+    monkeypatch.setattr(mfp_client, "_client", fake)
+    mfp_client.reset()
+    assert closed == [True]
+    assert mfp_client._client is None
