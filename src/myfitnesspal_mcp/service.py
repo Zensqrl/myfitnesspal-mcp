@@ -38,6 +38,7 @@ class NutritionService:
         today: Callable[[], date] = date.today,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         sleeper: Callable[[float], None] = time.sleep,
+        progress: Callable[[str], None] | None = None,
         retry_attempts: int | None = None,
         retry_backoff_seconds: float | None = None,
     ):
@@ -48,6 +49,7 @@ class NutritionService:
         self._today = today
         self._now = now
         self._sleeper = sleeper
+        self._progress = progress or (lambda _message: None)
         self._retry_attempts = retry_attempts or config.retry_attempts()
         self._retry_backoff_seconds = (
             config.retry_backoff_seconds()
@@ -79,6 +81,7 @@ class NutritionService:
         return warnings
 
     def sync_day(self, day: date, *, force: bool = False) -> SyncResult:
+        self._progress(f"Checking archive status for {day.isoformat()}...")
         stamp = self.store.retrieved_at(day.isoformat())
         note_status = self.store.component_status(day.isoformat(), "note")
         nutrition_due = self.policy.requires_refresh(
@@ -87,8 +90,10 @@ class NutritionService:
         note_due = note_status is not None and not note_status["complete"]
         if not nutrition_due and not note_due:
             logger.info("nutrition_cache_hit", extra={"day": day.isoformat()})
+            self._progress(f"Using cached data for {day.isoformat()}.")
             return SyncResult(day=day, source="cache", refreshed=False)
         logger.info("nutrition_upstream_fetch", extra={"day": day.isoformat(), "force": force})
+        self._progress(f"Fetching diary and nutrition for {day.isoformat()} from MyFitnessPal...")
         self.store.record_sync_attempt(day.isoformat())
         last_error: Exception | None = None
         for attempt in range(self._retry_attempts):
@@ -101,6 +106,7 @@ class NutritionService:
                 if not acquired.note_retrieved:
                     warnings.append(f"note fetch for {day.isoformat()} failed")
                 logger.info("nutrition_sync_completed", extra={"day": day.isoformat()})
+                self._progress(f"Archived diary and nutrition for {day.isoformat()}.")
                 return SyncResult(day=day, source="upstream", refreshed=True, warnings=warnings)
             except Exception as exc:
                 last_error = exc
@@ -111,6 +117,9 @@ class NutritionService:
                     "day": day.isoformat(), "attempt": attempt + 1, "delay_seconds": delay,
                     "error": type(exc).__name__,
                 })
+                self._progress(
+                    f"Fetch for {day.isoformat()} failed; retrying in {delay:g} seconds..."
+                )
                 self._sleeper(delay)
         assert last_error is not None
         self.store.record_sync_failure(day.isoformat(), type(last_error).__name__)
@@ -140,8 +149,12 @@ class NutritionService:
             ) for day in days
         )
         if measurements_due:
+            self._progress(
+                f"Fetching weight measurements for {start.isoformat()} through {end.isoformat()}..."
+            )
             try:
                 self.store.persist_weights(self.acquirer.fetch_weights(start, end), days)
+                self._progress("Archived weight measurements.")
             except Exception as exc:
                 if mfp_client.is_auth_error(exc):
                     raise
@@ -196,10 +209,14 @@ class NutritionService:
         # Measurements are range-oriented upstream data, so archive them once
         # after per-day diary commits rather than issuing one request per day.
         if not auth_failed:
+            self._progress(
+                f"Fetching weight measurements for {start.isoformat()} through {end.isoformat()}..."
+            )
             try:
                 self.store.persist_weights(
                     self.acquirer.fetch_weights(start, end), days
                 )
+                self._progress("Archived weight measurements.")
             except Exception as exc:
                 if mfp_client.is_auth_error(exc):
                     failed += 1

@@ -91,10 +91,14 @@ def _print_warnings(warnings: list[str]) -> None:
         print(f"warning: {warning}", file=sys.stderr)
 
 
+def _print_progress(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
 def _run_sync(args) -> int:
     from .runtime import create_service
 
-    service = create_service()
+    service = create_service(progress=_print_progress)
     try:
         if args.sync_command == "today":
             results = service.sync_range(date.today(), date.today(), force=args.force)
@@ -119,7 +123,7 @@ def _run_sync(args) -> int:
 def _run_backfill(args) -> int:
     from .runtime import create_service
 
-    service = create_service()
+    service = create_service(progress=_print_progress)
     try:
         result = service.backfill(args.start, args.end, force=args.force)
         _print_warnings(result.warnings)

@@ -49,7 +49,8 @@ streamable HTTP works.
 ### Run a local checkout
 
 `uvx mfp-mcp` runs the published package, not uncommitted local fixes. To run
-this checkout instead, use:
+this checkout instead, use Python 3.13 explicitly (the version currently tested
+by this project):
 
 ```bash
 uv --directory <checkout> run mfp-mcp
@@ -58,9 +59,22 @@ uv --directory D:/github_personal/MyFitnessPal-mcp run mfp-mcp
 ```
 
 For an MCP client, set the command to `uv` and its arguments to
-`--directory`, `<checkout>`, `run`, `mfp-mcp` (use the example path above when
-applicable). Run `uv --directory <checkout> run mfp-mcp auth` for local guided
-authentication.
+`--directory`, `<checkout>`, `run`, `--python`, `3.13`, `mfp-mcp` (use the
+example path above when applicable). Run the following for local guided
+authentication:
+
+```bash
+uv --directory <checkout> run mfp-mcp auth
+```
+
+Example:
+```bash
+uv --directory . run --python 3.13 mfp-mcp auth
+```
+
+When your shell is already in the checkout, `.` can replace `<checkout>`.
+Running bare `mfp-mcp` may select an older copy installed in the active Python
+or pyenv environment instead of this checkout.
 
 ## Authentication
 
@@ -156,12 +170,17 @@ leaving it false exports only local data.
 The service can run without MCP or AI:
 
 ```bash
-mfp-mcp sync today
-mfp-mcp sync recent --days 7
-mfp-mcp sync date 2024-06-14
-mfp-mcp sync range 2024-06-01 2024-06-30
-mfp-mcp backfill 2020-01-01 2024-12-31
+uv run mfp-mcp sync today
+uv run mfp-mcp sync recent --days 7
+uv run mfp-mcp sync date 2024-06-14
+uv run mfp-mcp sync range 2024-06-01 2024-06-30
+uv run mfp-mcp backfill 2020-01-01 2024-12-31
 ```
+
+These commands intentionally execute the current checkout. If you installed a
+release that contains these commands, the shorter `mfp-mcp ...` form is also
+valid. Sync and backfill print progress to the terminal before each potentially
+slow upstream fetch, retry, and archive update.
 
 Backfill is sequential, resumable, idempotent, and uses conservative pacing for
 every upstream request. It skips successfully archived immutable dates unless
@@ -236,6 +255,7 @@ layout also works with `MFP_MCP_DATA_DIR=/data`.
 ```bash
 git clone https://github.com/zensqrl/MyFitnessPal-mcp
 cd myfitnesspal-mcp
+uv python pin 3.13
 uv sync --extra autorefresh
 uv run pytest
 ```
