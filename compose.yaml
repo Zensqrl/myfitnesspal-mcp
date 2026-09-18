@@ -10,9 +10,9 @@ services:
     env_file:
       - .env
     ports:
-      # HTTP mode has no built-in authentication; keep it on loopback and
-      # reach it via SSH tunnel or an authenticating reverse proxy.
-      - "127.0.0.1:8484:8484"
+      # Published on the LAN so other hosts can reach it. HTTP mode has no
+      # built-in authentication — restrict access with a host firewall.
+      - "8484:8484"
     volumes:
       - ./state/config:/config
       - ./state/data:/data
