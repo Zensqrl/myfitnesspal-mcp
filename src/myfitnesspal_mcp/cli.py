@@ -58,6 +58,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--http", action="store_true", help="serve over streamable HTTP instead of stdio")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host (default 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8484, help="HTTP port (default 8484)")
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=None,
+        metavar="HOST",
+        help="permitted Host header when serving HTTP, e.g. labtop:8484 or labtop:* "
+             "(repeatable); required to reach a non-loopback bind by name",
+    )
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("serve", help="run the MCP server")
     commands.add_parser("auth", help="connect a MyFitnessPal account")
@@ -134,6 +142,33 @@ def _run_backfill(args) -> int:
         service.store.close()
 
 
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _apply_transport_security(host: str, allowed_hosts: list[str] | None) -> None:
+    """FastMCP fixes DNS-rebinding protection at construction time from its
+    default loopback bind, so a later --host change needs it recomputed."""
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    from .server import mcp
+
+    if allowed_hosts:
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=list(allowed_hosts),
+            allowed_origins=[f"http://{value}" for value in allowed_hosts]
+            + [f"https://{value}" for value in allowed_hosts],
+        )
+        return
+    if host not in LOOPBACK_HOSTS:
+        logging.getLogger(__name__).warning(
+            "serving on %s without --allowed-host; Host header validation is disabled", host
+        )
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+
+
 def main() -> None:
     from . import config
 
@@ -155,6 +190,7 @@ def main() -> None:
     if args.http:
         mcp.settings.host = args.host
         mcp.settings.port = args.port
+        _apply_transport_security(args.host, args.allowed_host)
         mcp.run(transport="streamable-http")
     else:
         mcp.run()
