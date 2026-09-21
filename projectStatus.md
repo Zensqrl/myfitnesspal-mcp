@@ -1,7 +1,7 @@
 # Personal Dashboard v0.1 — MyFitnessPal MCP handoff
 
 Last updated: 2026-09-20 (America/New_York)
-Repository: https://github.com/zensqrl/MyFitnessPal-mcp
+Repository: https://github.com/Zensqrl/myfitnesspal-mcp
 Readiness: IN_PROGRESS
 
 ## Goal and status
@@ -10,9 +10,9 @@ Provide locally cached nutrition to Home Assistant. Live dashboard acceptance PA
 
 ## Delivery evidence
 
-- Implemented: feature/browser-onboarding commits e4f6fc4 and 3be947b were fast-forward merged into local main on 2026-09-20; package metadata 0.3.0.
+- Implemented: feature/browser-onboarding commits e4f6fc4 and 3be947b were fast-forward merged into main on 2026-09-20; merge-status commit 0ddd977 followed. Package metadata remains 0.3.0.
 - Tested: 2026-09-20: 159 Python tests and six card tests passed in their latest respective runs. Earlier WSL/Compose tests verified viewer WebSocket access, isolation and IP-address TLS.
-- Released: local main contains the work; it has not been pushed, tagged or published.
+- Released: main was pushed to GitHub on 2026-09-20. No release tag or published package was created.
 - Deployed: Ubuntu /opt/myfitnesspal-mcp; app image ID prefix 7e2f45179d60 deployed 2026-09-20 20:29 EDT. Browser mobile-login image prefix fbf59ec30084cd4fd; Caddy 2.10.2-alpine. HA card v0.1.1 deployed separately.
 - Live-verified: 2026-09-20 20:30 EDT: backend contains all four numeric nutrition totals/targets. User screenshot confirms HA Nutrition Test PASS, units, diary date and fresh source timestamp, with HA read at 20:30:53 EDT. Dashboard connection acceptance is complete.
 
