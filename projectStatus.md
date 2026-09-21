@@ -10,7 +10,7 @@ Provide locally cached nutrition to Home Assistant. Live dashboard acceptance PA
 
 ## Delivery evidence
 
-- Implemented: feature/browser-onboarding, base f33b38e, uncommitted feature work; package metadata 0.3.0.
+- Implemented: feature/browser-onboarding committed as e4f6fc4; package metadata 0.3.0.
 - Tested: 2026-09-20: 159 Python tests and six card tests passed in their latest respective runs. Earlier WSL/Compose tests verified viewer WebSocket access, isolation and IP-address TLS.
 - Released: no browser-onboarding release/tag or immutable published artifact verified.
 - Deployed: Ubuntu /opt/myfitnesspal-mcp; app image ID prefix 7e2f45179d60 deployed 2026-09-20 20:29 EDT. Browser mobile-login image prefix fbf59ec30084cd4fd; Caddy 2.10.2-alpine. HA card v0.1.1 deployed separately.
@@ -37,7 +37,7 @@ Provide locally cached nutrition to Home Assistant. Live dashboard acceptance PA
 1. Confirm/install scripted boot recovery, then test an agreed reboot: setup access, HA reads, credentials, archive and diary routing must survive.
 2. Test token renewal/expiry and reconnect end to end, including live import/lease cleanup. Verify scheduled refresh across a day boundary and recovery from stale/error states.
 3. Make diary-username correction available through setup rather than requiring the repair script; clarify administrator versus MFP credentials.
-4. Review/commit feature changes, record the exact deployable revision, verify backup/restore procedure and establish a traceable release.
+4. Record which committed revision is next deployed, verify backup/restore procedure and establish a traceable release/tag if publishing is later desired.
 
 ## Deferred / optional
 
