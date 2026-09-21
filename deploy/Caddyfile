@@ -1,0 +1,58 @@
+{
+    auto_https disable_redirects
+    # IP-address clients commonly omit SNI; select our certificate for them too.
+    default_sni {$MFP_HOST}
+    admin off
+}
+
+https://{$MFP_HOST}:8443 {
+    tls internal
+    @outside not remote_ip {$MFP_ADMIN_CIDR}
+    respond @outside "Forbidden" 403
+    basic_auth {
+        admin {$MFP_ADMIN_HASH}
+    }
+    header {
+        Cache-Control "no-store"
+        Referrer-Policy "no-referrer"
+        X-Content-Type-Options "nosniff"
+    }
+    handle_path /browser/* {
+        forward_auth app:8484 {
+            uri /api/browser/authorize
+            # Authorization is HTTP even when the original request is WebSocket.
+            # Preserve upgrade headers on the separate browser reverse_proxy.
+            header_up -Upgrade
+            header_up -Connection
+            header_up X-MFP-Gateway {$MFP_GATEWAY_TOKEN}
+            header_up Host app:8484
+        }
+        reverse_proxy browser:6080
+    }
+    handle /mcp* {
+        respond "Use the Home Assistant endpoint" 404
+    }
+    handle {
+        reverse_proxy app:8484 {
+            header_up X-MFP-Gateway {$MFP_GATEWAY_TOKEN}
+            header_up Host app:8484
+        }
+    }
+}
+
+http://:8484 {
+    @ha {
+        remote_ip {$MFP_HA_IP}
+        path /mcp /mcp/*
+    }
+    handle @ha {
+        reverse_proxy app:8484 {
+            header_up X-MFP-Gateway {$MFP_GATEWAY_TOKEN}
+            header_up Host app:8484
+            flush_interval -1
+        }
+    }
+    handle {
+        respond "Forbidden" 403
+    }
+}

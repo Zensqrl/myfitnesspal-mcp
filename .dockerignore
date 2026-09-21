@@ -2,9 +2,16 @@
 .github
 .venv
 state
+secrets
+backups
+.deployment
+*.tar.gz
 tests
 docs
 *.db
+*.sqlite3
+*-wal
+*-shm
 cookies*
 .env*
 !.env.example

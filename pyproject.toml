@@ -21,7 +21,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-autorefresh = ["playwright>=1.40"]
+autorefresh = ["playwright==1.58.0"]
+web = ["uvicorn>=0.34,<1", "httpx>=0.28,<1", "websockets>=14,<17"]
 
 [project.urls]
 Repository = "https://github.com/Mason-Levyy/myfitnesspal-mcp"

@@ -41,6 +41,12 @@ endpoints can change without notice.
 
 ## Development workflow
 
+Maintain root `projectStatus.md` as the canonical Personal Dashboard v0.1
+handoff. Update it after meaningful progress or blocker changes, consolidating
+duplicate status files. Keep dated evidence, versions, remaining work and user
+actions concise; distinguish implemented, released, deployed and live-verified
+work. Never mark READY from tests alone or include secrets/personal diary data.
+
 Use Python 3.10 or newer and `uv` from the repository root.
 
 ```bash

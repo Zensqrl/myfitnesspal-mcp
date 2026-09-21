@@ -69,6 +69,8 @@ def _build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("serve", help="run the MCP server")
     commands.add_parser("auth", help="connect a MyFitnessPal account")
+    commands.add_parser("web", help="run gateway-protected browser setup and archive-only MCP")
+    commands.add_parser("browser", help="run the private browser sidecar")
     migrate = commands.add_parser("migrate-cache", help="copy a legacy cache into an account archive")
     migrate.add_argument("--username", required=True, help="MyFitnessPal username")
 
@@ -175,6 +177,13 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
     logging.basicConfig(level=getattr(logging, config.log_level()), stream=sys.stderr)
+
+    if args.command in {"web", "browser"}:
+        import uvicorn
+        module = "web" if args.command == "web" else "browser_service"
+        uvicorn.run(f"myfitnesspal_mcp.{module}:create_app", factory=True,
+                    host=args.host, port=args.port, access_log=False, proxy_headers=False)
+        return
 
     if args.command == "auth":
         from .auth import run_auth_flow

@@ -1,0 +1,10 @@
+[Unit]
+Description=Retry MyFitnessPal gateway startup when the LAN address becomes available
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+Unit=myfitnesspal-mcp-recovery.service
+
+[Install]
+WantedBy=timers.target

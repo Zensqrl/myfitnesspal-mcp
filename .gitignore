@@ -8,6 +8,14 @@ build/
 .env.*
 !.env.example
 *.db
+*.sqlite3
+*-wal
+*-shm
 cookies*
 .pytest_cache/
 uv.lock
+state/
+secrets/
+backups/
+.deployment/
+*.tar.gz

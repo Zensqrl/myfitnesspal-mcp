@@ -1,0 +1,90 @@
+name: myfitnesspal-mcp
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: app
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      TZ: ${MFP_TIMEZONE:-America/New_York}
+      MFP_PUBLIC_ORIGIN: https://${MFP_HOST}:8443
+      MFP_BROWSER_URL: http://browser:8090
+      MFP_BROWSER_TOKEN_FILE: /run/secrets/browser_token
+      MFP_GATEWAY_TOKEN_FILE: /run/secrets/gateway_token
+      MFP_TODAY_TTL_SECONDS: "900"
+      MFP_BACKGROUND_SYNC_SECONDS: "900"
+    volumes:
+      - ${MFP_ROOT}/state/config:/config
+      - ${MFP_ROOT}/state/data:/data
+      - ${MFP_ROOT}/secrets/browser_token:/run/secrets/browser_token:ro
+      - ${MFP_ROOT}/secrets/gateway_token:/run/secrets/gateway_token:ro
+    networks: [backend]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8484/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  browser:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: browser
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./chromium-seccomp.json
+    shm_size: 1gb
+    tmpfs:
+      - /tmp
+      - /home/mfp:uid=10001,gid=10001,mode=700
+    environment:
+      MFP_BROWSER_TOKEN_FILE: /run/secrets/browser_token
+      MFP_BROWSER_PROFILE: /browser
+    volumes:
+      - ${MFP_ROOT}/state/browser:/browser
+      - ${MFP_ROOT}/secrets/browser_token:/run/secrets/browser_token:ro
+    networks: [backend]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  gateway:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    # The upstream Caddy binary carries this file capability; without it Linux
+    # rejects exec after cap_drop=ALL, even when listening on high ports.
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    ports:
+      - "${MFP_BIND_IP}:8443:8443"
+      - "${MFP_BIND_IP}:8484:8484"
+    environment:
+      MFP_HOST: ${MFP_HOST}
+      MFP_HA_IP: ${MFP_HA_IP}
+      MFP_ADMIN_CIDR: ${MFP_ADMIN_CIDR}
+    env_file: ["${MFP_ROOT}/secrets/gateway.env"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${MFP_ROOT}/state/gateway:/data
+      - ${MFP_ROOT}/state/gateway-config:/config
+    networks: [backend]
+    depends_on:
+      app:
+        condition: service_healthy
+      browser:
+        condition: service_healthy
+networks:
+  backend:
+    driver: bridge

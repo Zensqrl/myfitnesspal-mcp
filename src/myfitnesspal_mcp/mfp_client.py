@@ -84,6 +84,7 @@ class CurlCffiClient(myfitnesspal.Client):
     def _get_user_metadata(self):
         """MFP's v2 users endpoint 500s for some accounts; fall back to the
         configured username, which is all the diary URLs need."""
+        self.profile_lookup_fallback = False
         try:
             meta = super()._get_user_metadata()
             if meta and meta.get("username"):
@@ -98,7 +99,24 @@ class CurlCffiClient(myfitnesspal.Client):
                 "Authenticated, but couldn't read your MyFitnessPal profile. "
                 "Set MFP_USERNAME to your MyFitnessPal username (not email) and retry."
             )
+        self.profile_lookup_fallback = True
         return {"username": username}
+
+    def _get_url_for_date(self, date, username, friend_username=None):
+        # Keep the archive/credential identity unchanged. A separately pinned
+        # routing hint applies only to this authenticated principal's own diary.
+        if friend_username is None and username == self.effective_username:
+            path = config.account_data_dir(username) / "diary-username.json"
+            if path.exists():
+                hint = json.loads(path.read_text(encoding="utf-8"))
+                principal = hashlib.sha256(str(self.user_id).encode()).hexdigest()
+                route = hint.get("username", "")
+                if hint.get("principal_sha256") != principal:
+                    raise ClientInitializationError("Diary routing account mismatch.")
+                if not isinstance(route, str) or not route or any(c in route for c in "@/?#\\"):
+                    raise ClientInitializationError("Invalid diary username routing hint.")
+                username = route
+        return super()._get_url_for_date(date, username, friend_username)
 
 
 def cookies_to_jar(cookies: dict[str, str]) -> CookieJar:

@@ -50,6 +50,7 @@ class NutritionService:
         self._now = now
         self._sleeper = sleeper
         self._progress = progress or (lambda _message: None)
+        self.propagate_auth_errors = False
         self._retry_attempts = retry_attempts or config.retry_attempts()
         self._retry_backoff_seconds = (
             config.retry_backoff_seconds()
@@ -123,6 +124,8 @@ class NutritionService:
                 self._sleeper(delay)
         assert last_error is not None
         self.store.record_sync_failure(day.isoformat(), type(last_error).__name__)
+        if self.propagate_auth_errors and mfp_client.is_auth_error(last_error):
+            raise last_error
         logger.warning("nutrition_sync_failed", extra={"day": day.isoformat(), "error": type(last_error).__name__})
         if self._has_cached_day(day):
             return SyncResult(

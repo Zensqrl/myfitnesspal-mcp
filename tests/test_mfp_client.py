@@ -1,6 +1,28 @@
 from myfitnesspal_mcp import mfp_client
 
 
+def test_diary_route_preserves_identity_and_checks_principal(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    from datetime import date
+    import pytest
+    client = object.__new__(mfp_client.CurlCffiClient)
+    client._user_metadata = {"username": "synthetic@example.invalid"}
+    client._auth_data = {"user_id": "synthetic-principal"}
+    monkeypatch.setattr(mfp_client.config, "account_data_dir", lambda username: tmp_path)
+    hint = {"username": "synthetic-user", "principal_sha256": hashlib.sha256(b"synthetic-principal").hexdigest()}
+    path = tmp_path / "diary-username.json"
+    path.write_text(json.dumps(hint))
+    url = client._get_url_for_date(date(2026, 9, 20), client.effective_username)
+    assert url.endswith('/food/diary/synthetic-user?date=2026-09-20')
+    assert client.effective_username == "synthetic@example.invalid"
+    assert '/friend?' in client._get_url_for_date(date(2026, 9, 20), client.effective_username, 'friend')
+    hint['principal_sha256'] = 'wrong'
+    path.write_text(json.dumps(hint))
+    with pytest.raises(mfp_client.ClientInitializationError):
+        client._get_url_for_date(date(2026, 9, 20), client.effective_username)
+
+
 def test_cookies_to_jar_scopes_to_myfitnesspal():
     jar = mfp_client.cookies_to_jar({"a": "1", "b": "2"})
     cookies = list(jar)

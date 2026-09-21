@@ -27,7 +27,7 @@ CMD ["--http", "--host", "0.0.0.0", "--port", "8484", "serve"]
 
 # Optional Playwright-backed session refresh. Build with:
 #   docker build --target autorefresh -t mfp-mcp:autorefresh .
-FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy AS autorefresh
+FROM mcr.microsoft.com/playwright/python:v1.58.0-noble AS autorefresh
 
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin mfp
 

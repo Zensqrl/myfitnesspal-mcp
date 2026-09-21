@@ -1,0 +1,9 @@
+[Unit]
+Description=Recover MyFitnessPal gateway after boot-time LAN binding failure
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/myfitnesspal-mcp/config/recover-gateway.py
+TimeoutStartSec=100

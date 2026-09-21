@@ -1,5 +1,17 @@
 # myfitnesspal-mcp
 
+### Diary username correction
+
+When MyFitnessPal's profile lookup fails, an email-address fallback can route diary reads to the wrong page. An explicitly verified username can be pinned with `scripts/set-diary-username.py` inside the app container. The script checks the saved authenticated principal against the archive binding and writes only `diary-username.json` in that account's data directory. The client checks that binding on every routed diary request. Credentials and archive identity are not renamed or migrated; friend-diary requests are unaffected. Remove that routing file to revert the override. Do not infer a username from an email address.
+
+### Setup activity panel (LAN deployment)
+
+The setup page shows the latest 100 timestamped activity messages and refreshes every 2.5 seconds. Messages cover queue acceptance/rejection, authentication, cache checks, upstream fetches, retries, and completion/incomplete results. This is a sanitized in-memory activity feed, not a shell console; it clears on app restart and never includes tokens or diary contents. `Ready` means idle, not proof of valid authentication or complete nutrition.
+
+The setup page's **Sync today** requests a fresh fetch rather than reusing the 15-minute cache. Rejected requests explain why. A successful cookie import closes any old local browser lease. Missing nutrition totals/targets or a failed fetch returning stale cache produce **Sync incomplete**, not a successful completion message. The existing MCP read freshness policy is unchanged.
+
+For an app-only Ubuntu update after transferring source into `/opt/myfitnesspal-mcp/app`, run `scripts/update-app.py` with Python 3. It rebuilds/recreates only the app and rolls back the image if health verification fails; browser/gateway and persistent mounts are retained.
+
 Connect MyFitnessPal to Claude or any MCP client. Log meals by talking, search
 the food database with macros, track trends, and export nutrition history from
 your real MyFitnessPal diary.
@@ -45,6 +57,246 @@ Published on PyPI as [`mfp-mcp`](https://pypi.org/project/mfp-mcp/).
 
 Requires [uv](https://docs.astral.sh/uv/). Any MCP client supporting stdio or
 streamable HTTP works.
+
+## Headless Ubuntu deployment with browser setup
+
+The `feature/browser-onboarding` deployment runs a private browser on Ubuntu
+and displays it in a password-protected setup page. Sign into MyFitnessPal in
+that browser, then select **Finish connecting**. No cookie extraction, SSH
+session, or container restart is needed for subsequent logins.
+
+All installation files and persistent state live beneath
+`/opt/myfitnesspal-mcp`. This deployment serves a separate, archive-only MCP
+tool set suitable for Home Assistant. The ordinary `serve`/stdio behavior and
+its full tool set remain available independently.
+
+### Scripted installation from Windows
+
+Use the feature branch checkout and run the deployment wrapper:
+
+```powershell
+.\scripts\deploy.ps1 -SshTarget youruser@your-ubuntu-server
+```
+
+The wrapper uploads a source snapshot (including current feature changes) and
+runs `install-ubuntu.sh` over an interactive SSH connection. SSH and sudo may
+prompt for their passwords. It uploads only application source, deployment
+files and scripts; local credentials and database files are excluded.
+
+For optional SSH key setup, run `scripts/setup-ssh.ps1 -SshTarget youruser@your-ubuntu-server`
+in your own PowerShell terminal. It creates a dedicated Ed25519 key, secures its
+private file with a Windows ACL, and adds only its public key to the server's
+authorized keys. Enter your server password locally when prompted. Existing
+keys are preserved; the script changes neither sudo policy nor your password.
+For unattended use, leave the key passphrase empty or load a protected key into
+an SSH agent. Both `deploy.ps1` and `fetch-ca.ps1` accept `-IdentityFile` for this
+key (default helper location: `$env:USERPROFILE/.ssh/id_ed25519_myfitnesspal_mcp`).
+
+Alternatively, from a checkout already on Ubuntu:
+
+```bash
+sudo bash scripts/install-ubuntu.sh
+```
+
+The installer checks Ubuntu and Docker, installs Docker Engine and Compose
+from Docker's Ubuntu package repository when missing, creates private
+directories, and generates credentials. It asks for:
+
+- The Ubuntu server's LAN IPv4 address and setup hostname (using the IP is fine).
+- Home Assistant's IPv4 address; the default is `192.168.50.10`.
+- Your administrator network CIDR, for example `192.168.50.0/24`.
+- Your timezone; the default is `America/New_York`.
+- A new setup-page administrator password.
+
+Reserve the server and HA addresses in DHCP. The installer binds only the
+chosen IPv4 address; it does not add an IPv6 listener or change your firewall.
+It preserves existing deployment configuration, secrets, profiles and archives
+on subsequent runs. A dirty Git checkout at the server destination is rejected.
+Docker/Desktop must be running; an existing stopped engine is reported rather
+than replaced. First builds need Internet access to download packages/images.
+
+### HTTPS trust and first login
+
+The setup address is `https://<setup-hostname-or-ip>:8443`; the username is
+`admin`, with the password you chose during installation. Caddy generates a
+private certificate authority for local HTTPS. No public domain is required.
+
+Copy **only** this public certificate to your computer using your file-transfer
+client or the script below; never copy/distribute the private `root.key`:
+
+```powershell
+.\scripts\fetch-ca.ps1 -SshTarget youruser@your-ubuntu-server
+.\scripts\trust-ca.ps1 -CertificatePath .\mfp-root.crt
+```
+
+The trust helper displays the certificate fingerprint and asks for explicit
+confirmation before trusting it for your Windows user. Verify it against the
+fingerprint printed through SSH by `fetch-ca.ps1`. Firefox may require a
+separate certificate import in its settings. On other clients, import the
+public CA into that client's trusted certificate store before logging in.
+
+The server browser opens `https://www.myfitnesspal.com/account/login` directly
+with a 480×900 portrait viewport, mobile user agent and touch support. On a phone,
+use the noVNC keyboard control if tapping a field does not open your keyboard.
+After a browser-container update, cancel any old session and reconnect.
+
+Open the setup page, click **Connect / reconnect**, sign into the actual
+MyFitnessPal site, and click **Finish connecting**. Complete MFA or challenges
+yourself. Browser sessions expire after 15 minutes. If a profile lookup fails,
+you can supply your MyFitnessPal username; reconnecting an existing archive
+with an unverified account identity is deliberately rejected.
+
+Cookie paste remains a fallback if MyFitnessPal rejects the server browser.
+Passwords, session cookies and browser profiles are never sent to Home
+Assistant. Do not set `MFP_COOKIE` or `MFP_USERNAME` on the web service: saved
+credentials are its source of truth.
+
+**Disconnect** removes usable local credentials and the browser profile while
+retaining the archive and its account identity for offline reads. It does not
+revoke sessions on MyFitnessPal's servers. Connecting a different account
+after disconnect creates/uses that account's separate archive.
+
+### Home Assistant configuration
+
+For an existing installation affected by a reboot-time LAN address race, run
+`scripts/install-boot-recovery.ps1` from Windows and enter the Ubuntu sudo
+password locally. New installs include this recovery timer automatically.
+It retries the gateway's address-binding failure every 30 seconds and restores
+a missing project-network attachment; it does not restart intentionally stopped
+containers or alter Docker startup for unrelated services. A reboot verification
+is still required after installing it.
+
+In **Settings → Devices & services → Add integration**, choose **Model Context
+Protocol** (the MCP *client*, not **Model Context Protocol Server**).
+
+| Setting | Value |
+| --- | --- |
+| Server URL | `http://<ubuntu-lan-ip>:8484/mcp` — the installer prints the exact URL |
+| Transport | Streamable HTTP, detected automatically |
+| OAuth client ID / secret | Not needed for this IP-restricted LAN deployment |
+| Permitted source address | The HA address supplied to the installer, default `192.168.50.10` |
+| Setup page | `https://<setup-hostname-or-ip>:8443` — do not use this as the MCP URL |
+
+Then configure your conversation agent to use the MyFitnessPal MCP tools in
+its available LLM API/tool settings. The exact agent settings vary by provider.
+Ask for today's archived calories and confirm the answer includes the data's
+age. Adding the integration supplies tools to conversation agents; it does
+not create nutrition sensors or dashboards.
+
+Home Assistant 2026.9.2 supports Streamable HTTP and applies a 10-second
+tool-call timeout. Some HA documentation/UI versions still say “SSE URL”; use
+`/mcp`, not `/sse`, with this deployment. See the [integration documentation](https://www.home-assistant.io/integrations/mcp/)
+and [2026.9.2 client implementation](https://github.com/home-assistant/core/blob/2026.9.2/homeassistant/components/mcp/coordinator.py).
+
+| Browser-deployment tool | Behavior |
+| --- | --- |
+| `fitness_get_day(day)` | Returns the local day's nutrition, diary, notes and feel entry, retrieval timestamp, staleness and whether refresh was queued |
+| `fitness_connection_status()` | Connection, reconnect requirement and background job status; no credentials |
+| `fitness_sync_today()` | Queues today's sync and returns immediately |
+
+The web deployment deliberately does not expose live food search or diary
+mutations. Upstream rate limiting and interactive reauthentication cannot
+reliably fit HA's tool-call timeout. Missing/stale reads queue background work,
+and a missing day is explicitly reported as not cached rather than as zero.
+Today is refreshed in the background every 15 minutes; yesterday uses the
+existing freshness policy. Queue entries are bounded and deduplicated. The
+worker owns all upstream operations in one process so the shared rate limiter
+continues to apply. A restart discards pending jobs; periodic sync and repeated
+day queries safely enqueue them again.
+
+The HA listener is **unencrypted HTTP protected by source-IP restriction**.
+Use it only on a trusted LAN. It has no bearer token or OAuth login. The gateway
+enforces the exact source IP and does not trust client-supplied forwarding
+headers; only `/mcp` is available on that port. For networks requiring encrypted
+MCP traffic, provision a certificate trusted by HA and change the gateway to
+HTTPS before use. Do not expose either listener through Internet port forwarding.
+
+### WSL testing
+
+```powershell
+.\scripts\setup-wsl.ps1
+```
+
+The helper prepares the Ubuntu distribution if missing, then invokes the same
+Linux installer. Ubuntu's initial user creation and a Windows-required restart
+cannot be completed silently; rerun the helper afterward. If using Docker
+Desktop, start it and enable integration with that Ubuntu distribution first.
+Otherwise the installer can install native Docker under a systemd-enabled
+Ubuntu WSL distribution. Files are still stored in `/opt/myfitnesspal-mcp` on
+the Linux filesystem.
+
+WSL's default NAT address is not normally reachable from Home Assistant on
+another machine. Use WSL for browser/backend tests; use the Ubuntu LAN server
+for the final HA test, or configure WSL mirrored networking separately. Do not
+use `localhost` as HA's server address: it would refer to HA itself.
+
+### Verification, updates and backups
+
+```bash
+sudo bash /opt/myfitnesspal-mcp/app/scripts/verify-deployment.sh
+sudo bash /opt/myfitnesspal-mcp/app/scripts/backup.sh
+```
+
+Verification checks the internal MCP handshake/tool list and rejects direct
+backend access. Verify the external route by adding the integration from HA;
+an internal smoke test cannot establish HA's network path or source address.
+The browser can also be exercised without a real account:
+
+```powershell
+.\scripts\test-containers.ps1
+```
+
+For a native Ubuntu/WSL engine, the equivalent scripted path is:
+
+```bash
+sudo bash scripts/setup-test-engine.sh
+sudo bash scripts/test-containers.sh
+```
+
+From Windows with the native Ubuntu WSL engine already prepared, use
+`scripts/test-containers.ps1 -Wsl`. Linux/WSL testing also exercises the full
+Compose stack with temporary state under `/opt/myfitnesspal-mcp/test-runs` and
+loopback-only ports. It removes that synthetic state and stops its containers
+when finished; built images are retained for subsequent tests.
+
+That script builds the images and runs a synthetic login through real Chromium,
+cookie harvesting, profile promotion, refresh, and disconnect. It uses only
+temporary container storage and no MyFitnessPal credentials.
+
+Re-run `deploy.ps1` to update from the feature checkout. The source snapshot is
+installed under `app`; deployment settings and data live outside it. A backup
+stops the app/browser briefly, uses SQLite's backup API, copies private state,
+and restarts the services even if copying fails. Backups contain secrets and
+private certificate keys: encrypt them before moving them off the host.
+
+When the existing `mfp-mcp` container uses the legacy mounts beneath
+`/opt/mcp-mfp/myfitnesspal-mcp/state`, installation builds the new images first,
+stops that container, takes a private backup, and copies its config/archive to
+the new location. The old container and original state are retained. Failed
+startup/verification restarts the old container; successful migration disables
+its automatic restart to free port 8484 across reboots. Unexpected mounts or
+existing destination state cause migration to stop rather than overwrite data.
+Environment-only MyFitnessPal cookies are not copied: use the new browser login
+if the old deployment did not save credentials in its config directory.
+
+### Deployment troubleshooting
+
+- **403 from HA:** confirm HA's current source IP matches `MFP_HA_IP` in
+  `/opt/myfitnesspal-mcp/config/deployment.env`; NAT can change the observed IP.
+- **Certificate warning:** trust the public CA on your computer and use the
+  configured hostname/IP; do not enter your password on an unverified origin.
+- **Browser login rejected:** complete challenges manually, retry, or use the
+  cookie fallback. Automatic refresh is best effort, not a fresh password login.
+- **Reconnect required:** reconnect from the setup page; the archive remains
+  readable while upstream authentication is unavailable.
+- **Data not cached yet:** wait for the queued job, then query again. Backfills
+  can take time under the conservative shared upstream rate limiter.
+- **Browser sandbox error:** run `test-containers.ps1` before attempting real
+  login. The deployment requires an environment that permits Chromium's
+  sandbox; do not disable it or run the container privileged as a workaround.
+
+See [the browser deployment design](docs/browser-onboarding.md) for service
+boundaries, storage and lifecycle details.
 
 ### Run a local checkout
 
