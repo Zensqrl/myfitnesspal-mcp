@@ -1,4 +1,5 @@
 import time
+from datetime import date
 from unittest.mock import Mock
 
 import pytest
@@ -19,6 +20,9 @@ def client(tmp_path, monkeypatch):
     manager.start = manager.stop = noop
     manager.status.return_value = {"browser_open": False}
     manager.archived_day.return_value = {"status": "not_cached", "stale": True}
+    manager.archive_view.return_value = {"found": False, "day": "2026-01-01", "data": None, "sync": None}
+    manager.queue_historical.return_value = True
+    manager.cancel_historical.return_value = True
     manager.pending = set()
     with TestClient(create_app(manager)) as result:
         result.manager = manager
@@ -75,3 +79,36 @@ def test_mcp_cached_read_queues_refresh_promptly(client):
     assert response.status_code == 200
     assert 'refresh_queued' in response.text
     assert time.monotonic() - started < 2
+
+
+def test_historical_utility_validation_and_inclusive_arguments(client):
+    response = client.post("/api/sync-range", headers=POST, json={
+        "start": "2026-01-02", "end": "2026-01-01", "force": False
+    })
+    assert response.status_code == 400
+    response = client.post("/api/sync-range", headers=POST, json={
+        "start": "2026-01-01", "end": "2026-01-02", "force": True
+    })
+    assert response.status_code == 202
+    args, kwargs = client.manager.queue_historical.call_args
+    assert args == (date(2026, 1, 1), date(2026, 1, 2))
+    assert kwargs == {"force": True, "kind": "range"}
+
+
+def test_backfill_ends_today_and_cancel_is_explicit(client):
+    response = client.post("/api/backfill", headers=POST, json={
+        "start": "2026-01-01", "force": False
+    })
+    assert response.status_code == 202
+    args, kwargs = client.manager.queue_historical.call_args
+    assert args[0] == date(2026, 1, 1)
+    assert args[1] == date.today()
+    assert kwargs["kind"] == "backfill"
+    assert client.post("/api/cancel-utility", headers=POST, json={}).status_code == 202
+
+
+def test_archive_day_is_read_only_and_validated(client):
+    assert client.get("/api/archive/day?day=not-a-date", headers=AUTH).status_code == 400
+    response = client.get("/api/archive/day?day=2026-01-01", headers=AUTH)
+    assert response.status_code == 200
+    client.manager.archive_view.assert_called_once_with(date(2026, 1, 1))

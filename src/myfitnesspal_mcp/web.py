@@ -90,6 +90,22 @@ def create_app(manager=None):
         result["today"] = await asyncio.to_thread(manager.archived_day, date.today())
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
+    def historical_day(value):
+        if not isinstance(value, str):
+            raise ValueError()
+        parsed = date.fromisoformat(value)
+        if parsed > date.today() or parsed < date.today() - timedelta(days=36500):
+            raise ValueError()
+        return parsed
+
+    async def archive_day(request):
+        try:
+            selected = historical_day(request.query_params.get("day"))
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "Choose a valid historical date."}, status_code=400)
+        result = await asyncio.to_thread(manager.archive_view, selected)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
     async def authorize_browser(request):
         # Gateway already authenticated the administrator. Also require an active
         # lease and reject cross-origin WebSocket handshakes.
@@ -137,6 +153,34 @@ def create_app(manager=None):
                 queued = manager.queue_day(date.today(), force=True)
                 return JSONResponse({"queued": queued, "error": None if queued else manager.message},
                                     status_code=202 if queued else 409)
+            elif op == "backfill":
+                start = historical_day(data.get("start"))
+                force = data.get("force", False)
+                if not isinstance(force, bool):
+                    raise ValueError()
+                queued = manager.queue_historical(
+                    start, date.today(), force=force, kind="backfill"
+                )
+                return JSONResponse(
+                    {"queued": queued, "error": None if queued else manager.message},
+                    status_code=202 if queued else 409,
+                )
+            elif op == "sync-range":
+                start, end = historical_day(data.get("start")), historical_day(data.get("end"))
+                force = data.get("force", False)
+                if end < start or not isinstance(force, bool):
+                    raise ValueError()
+                queued = manager.queue_historical(start, end, force=force, kind="range")
+                return JSONResponse(
+                    {"queued": queued, "error": None if queued else manager.message},
+                    status_code=202 if queued else 409,
+                )
+            elif op == "cancel-utility":
+                cancelled = manager.cancel_historical()
+                return JSONResponse(
+                    {"cancel_requested": cancelled, "error": None if cancelled else manager.message},
+                    status_code=202 if cancelled else 409,
+                )
             else:
                 return Response(status_code=404)
             if manager.pending:
@@ -158,7 +202,8 @@ def create_app(manager=None):
 
     app = Starlette(routes=[
         Route("/healthz", health), Route("/", asset), Route("/assets/{name}", asset),
-        Route("/api/status", status), Route("/api/browser/authorize", authorize_browser),
+        Route("/api/status", status), Route("/api/archive/day", archive_day),
+        Route("/api/browser/authorize", authorize_browser),
         Route("/api/{action}", action, methods=["POST"]),
         Mount("/", app=mcp.streamable_http_app()),
     ], middleware=[Middleware(GatewayOnly, secret=secret)], lifespan=lifespan)

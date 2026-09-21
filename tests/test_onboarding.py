@@ -209,3 +209,77 @@ def test_failed_refresh_marks_reconnect_required(manager, monkeypatch):
         assert manager.reconnect
         assert not manager.queue_day(date.today())
     asyncio.run(check())
+
+
+def test_historical_sync_skips_complete_cache_and_forces_requested_dates(manager, monkeypatch, tmp_path):
+    from myfitnesspal_mcp import onboarding
+    auth.save_cookies({auth.SESSION_COOKIE: "old"}, "tester")
+    monkeypatch.setattr(mfp_client, "get_client", lambda: object())
+    start, end = date(2026, 1, 1), date(2026, 1, 2)
+    calls = []
+
+    class Acquirer:
+        def fetch_weights(self, first, last):
+            return {}
+
+    class Service:
+        def __init__(self):
+            self.store = Store(tmp_path / "historical.db")
+            self.acquirer = Acquirer()
+            self.propagate_auth_errors = False
+            self.store.mark_component(start.isoformat(), "nutrition_diary", complete=True,
+                                      fetched_at=datetime.now(timezone.utc))
+        def sync_day(self, selected, force=False):
+            calls.append((selected, force))
+            self.store.mark_component(selected.isoformat(), "nutrition_diary", complete=True,
+                                      fetched_at=datetime.now(timezone.utc))
+            return SimpleNamespace(source="upstream", refreshed=True)
+
+    service = Service()
+    monkeypatch.setattr(onboarding, "create_service", lambda **kwargs: service)
+    manager.job = {"state": "queued", "total": 2, "refreshed": 0, "skipped": 0, "failed": 0}
+    manager.sync_historical(start, end, False)
+    assert calls == [(end, True)]
+    assert manager.status()["job"]["skipped"] == 1
+    assert manager.status()["job"]["refreshed"] == 1
+    assert manager.status()["job"]["state"] == "completed"
+
+
+def test_historical_force_refreshes_all_dates(manager, monkeypatch, tmp_path):
+    from myfitnesspal_mcp import onboarding
+    auth.save_cookies({auth.SESSION_COOKIE: "old"}, "tester")
+    monkeypatch.setattr(mfp_client, "get_client", lambda: object())
+    selected = date(2026, 1, 1)
+    calls = []
+    store = Store(tmp_path / "forced.db")
+    store.mark_component(selected.isoformat(), "nutrition_diary", complete=True,
+                         fetched_at=datetime.now(timezone.utc))
+    service = SimpleNamespace(
+        store=store, propagate_auth_errors=False,
+        acquirer=SimpleNamespace(fetch_weights=lambda first, last: {}),
+        sync_day=lambda day, force=False: (
+            calls.append((day, force)) or SimpleNamespace(source="upstream", refreshed=True)
+        ),
+    )
+    monkeypatch.setattr(onboarding, "create_service", lambda **kwargs: service)
+    manager.job = {"state": "queued", "total": 1, "refreshed": 0, "skipped": 0, "failed": 0}
+    manager.sync_historical(selected, selected, True)
+    assert calls == [(selected, True)]
+    assert manager.status()["job"]["refreshed"] == 1
+
+
+def test_historical_cancel_and_archive_view_are_safe(manager):
+    selected = date.today()
+    manager.job = {"state": "running", "total": 10, "processed": 0,
+                   "refreshed": 0, "skipped": 0, "failed": 0}
+    assert manager.cancel_historical()
+    assert manager.status()["job"]["cancel_requested"] is True
+    auth.save_cookies({auth.SESSION_COOKIE: "old"}, "tester")
+    with StoreContext("tester") as store:
+        store.upsert_nutrition(selected.isoformat(), calories=123)
+        store.mark_component(selected.isoformat(), "nutrition_diary", complete=True,
+                             fetched_at=datetime.now(timezone.utc))
+    result = manager.archive_view(selected)
+    assert result["found"] is True
+    assert result["data"]["nutrition"]["calories"] == 123
+    assert "account_id" not in str(result)

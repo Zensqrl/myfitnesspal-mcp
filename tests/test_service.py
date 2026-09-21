@@ -17,8 +17,8 @@ def acquired(day: date, *, retrieved_at: datetime = NOW) -> AcquiredDay:
         nutrients={"calories": 300.0, "protein": 10.0, "carbohydrates": 50.0, "fiber": 8.0},
     )
     return AcquiredDay(
-        day=day, totals={"calories": 300.0, "protein": 10.0, "carbohydrates": 50.0, "fiber": 8.0},
-        goals={"calories": 2000.0}, entries=[entry], water_ml=500.0,
+        day=day, totals={"calories": 300.0, "protein": 10.0, "carbohydrates": 50.0, "fat": 5.0, "fiber": 8.0},
+        goals={"calories": 2000.0, "protein": 100.0, "carbohydrates": 250.0, "fat": 70.0}, entries=[entry], water_ml=500.0,
         note="steady", note_retrieved=True, complete=False,
         raw_payload={"day": day.isoformat(), "totals": {"fiber": 8.0}, "meals": []},
         retrieved_at=retrieved_at,
@@ -130,3 +130,15 @@ def test_publisher_runs_only_after_successful_persistence(store):
 def test_missing_day_failure_is_raised(store):
     with pytest.raises(ValueError, match="bad html"):
         service(store, FakeAcquirer(error=ValueError("bad html"))).get_day(TODAY)
+
+
+def test_incomplete_upstream_response_does_not_replace_valid_cache(store):
+    from dataclasses import replace
+    from myfitnesspal_mcp.service import IncompleteNutritionData
+    store.persist_acquired_day(acquired(TODAY))
+    incomplete = replace(acquired(TODAY), totals={}, goals={})
+    fake = FakeAcquirer({TODAY: incomplete})
+    result = service(store, fake).sync_day(TODAY, force=True)
+    assert result.source == "stale_cache"
+    assert store.nutrition(TODAY.isoformat())["calories"] == 300.0
+    assert store.component_status(TODAY.isoformat(), "nutrition_diary")["error"] == IncompleteNutritionData.__name__

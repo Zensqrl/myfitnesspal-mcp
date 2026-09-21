@@ -40,7 +40,7 @@ class FakeMeal:
 class FakeDay:
     def __init__(self):
         self.totals = {"calories": 2100, "protein": 150, "carbohydrates": 200, "fat": 70}
-        self.goals = {"calories": 2200}
+        self.goals = {"calories": 2200, "protein": 160, "carbohydrates": 240, "fat": 75}
         self.water = 750
         self.meals = [
             FakeMeal("breakfast", [FakeEntry("Oats", {"calories": 300, "protein": 10})]),

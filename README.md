@@ -12,6 +12,20 @@ The setup page's **Sync today** requests a fresh fetch rather than reusing the 1
 
 For an app-only Ubuntu update after transferring source into `/opt/myfitnesspal-mcp/app`, run `scripts/update-app.py` with Python 3. It rebuilds/recreates only the app and rolls back the image if health verification fails; browser/gateway and persistent mounts are retained.
 
+### Setup archive utilities
+
+The authenticated HTTPS setup page includes three local archive utilities:
+
+- **Backfill from a date** synchronizes every date from the selected start through the server's current date.
+- **Sync a date range** synchronizes both selected endpoints and every date between them.
+- **Archive day viewer** reads one canonical database record without contacting MyFitnessPal and renders the same response as rich text or formatted JSON.
+
+Historical synchronization skips dates whose `nutrition_diary` component is already marked complete. Selecting **Force resync completed dates** retrieves every requested date. Each successful date commits independently, non-authentication failures do not erase older cached data, and rerunning a partially completed job resumes by skipping successes. An authentication failure stops the range and requires reconnection. Weight measurements are fetched once per range when at least one diary date is refreshed (or when force is selected).
+
+Only one upstream operation runs at a time. Progress reports processed, refreshed, skipped and failed counts. **Cancel after current date** stops between requests; it does not interrupt or roll back the date already in flight. Large or forced ranges require browser confirmation and still use the shared upstream rate limiter.
+
+The archive viewer returns the current canonical day record plus sanitized sync metadata. It does not expose credential data, account-binding metadata, internal hashes or every stored raw snapshot. Food names and notes are shown because this is an administrator-authenticated archive view; browser code inserts them as text, never HTML.
+
 Connect MyFitnessPal to Claude or any MCP client. Log meals by talking, search
 the food database with macros, track trends, and export nutrition history from
 your real MyFitnessPal diary.

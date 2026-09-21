@@ -1,15 +1,42 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MyFitnessPal connection</title><link rel="stylesheet" href="/assets/style.css"><script src="/assets/app.js" defer></script></head>
-<body><main><h1>MyFitnessPal</h1><p>Connect your account to your local nutrition archive.</p>
+<body><main>
+<header><h1>MyFitnessPal</h1><p>Connect your account to your local nutrition archive.</p></header>
+
 <section aria-live="polite"><h2 id="state">Loading…</h2><p id="detail"></p><p id="freshness"></p><p id="message"></p></section>
-<nav><button id="start">Connect / reconnect</button><button id="sync">Sync today</button><button id="disconnect">Disconnect</button></nav>
-<section><h2>Activity</h2><p>Recent server activity; clears when the server restarts. No tokens or diary contents are shown.</p><pre id="activity" role="log" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:20rem;overflow:auto">Waiting for server status...</pre></section>
+<nav aria-label="Connection actions"><button id="start" class="mutating">Connect / reconnect</button><button id="sync" class="mutating">Sync today</button><button id="disconnect" class="mutating">Disconnect</button></nav>
+
+<section><h2>Activity</h2><p>Recent safe server activity; clears when the app restarts. Tokens and diary contents are never logged here.</p>
+<div id="job" hidden><h3>Historical synchronization</h3><progress id="job-progress" max="1" value="0"></progress><p id="job-detail"></p><button id="cancel-utility">Cancel after current date</button></div>
+<pre id="activity" role="log" aria-live="polite">Waiting for server status...</pre></section>
+
+<section><h2>Historical synchronization</h2><p>Dates are interpreted in the server timezone. Completed cached dates are skipped unless force is selected.</p>
+<div class="utility-grid">
+<form id="backfill-form"><h3>Backfill from a date</h3><p>Synchronize every date from the selected start through today.</p>
+<label for="backfill-start">Start date</label><input id="backfill-start" name="start" type="date" required>
+<label class="check"><input id="backfill-force" type="checkbox"> Force resync completed dates</label>
+<button class="utility-mutating" type="submit">Start backfill</button></form>
+
+<form id="range-form"><h3>Sync a date range</h3><p>Both the begin and end dates are included.</p>
+<label for="range-start">Begin date</label><input id="range-start" name="start" type="date" required>
+<label for="range-end">End date</label><input id="range-end" name="end" type="date" required>
+<p id="range-count" class="secondary"></p>
+<label class="check"><input id="range-force" type="checkbox"> Force resync completed dates</label>
+<button class="utility-mutating" type="submit">Start range sync</button></form>
+</div></section>
+
+<section><h2>Archive day viewer</h2><p>Read the canonical local database record without contacting MyFitnessPal.</p>
+<form id="archive-form" class="archive-form"><label for="archive-date">Archive date</label><input id="archive-date" name="day" type="date" required><button type="submit">Load archived date</button></form>
+<div id="archive-result" hidden><div class="view-tabs" role="group" aria-label="Archive data view"><button id="show-rich" type="button" aria-pressed="true">Rich view</button><button id="show-raw" type="button" aria-pressed="false">Raw JSON</button><button id="copy-json" type="button">Copy JSON</button></div>
+<div id="archive-rich"></div><pre id="archive-raw" hidden></pre></div></section>
+
 <section id="login" hidden><h2>Sign in to MyFitnessPal</h2><p>Use the browser below, then finish connecting. This window expires after 15 minutes.</p>
 <iframe id="browser" title="MyFitnessPal login browser" allow="clipboard-read; clipboard-write"></iframe>
-<label>MyFitnessPal username (only if profile lookup fails)<input id="username" autocomplete="off" maxlength="128"></label>
-<button id="finish">Finish connecting</button><button id="cancel">Cancel</button></section>
+<label for="username">MyFitnessPal username (only if profile lookup fails)</label><input id="username" autocomplete="off" maxlength="128">
+<button id="finish" class="mutating">Finish connecting</button><button id="cancel">Cancel</button></section>
+
 <details><summary>Fallback: paste a session cookie</summary><p>Use this if MyFitnessPal rejects the server browser.</p>
-<label>Session cookie<input id="cookie" type="password" autocomplete="off"></label><button id="paste">Save cookie</button></details>
+<label for="cookie">Session cookie</label><input id="cookie" type="password" autocomplete="off"><button id="paste" class="mutating">Save cookie</button></details>
 <p>Your archive stays on this server. Disconnecting removes local login access and retains archived data.</p>
 </main></body></html>

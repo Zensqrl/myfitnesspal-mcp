@@ -19,6 +19,21 @@ from .store import Store
 logger = logging.getLogger(__name__)
 
 
+class IncompleteNutritionData(RuntimeError):
+    """The upstream diary response did not contain the required daily contract."""
+
+
+def validate_nutrition_contract(acquired) -> None:
+    required = ("calories", "protein", "carbohydrates", "fat")
+    for values in (acquired.totals, acquired.goals):
+        for key in required:
+            value = values.get(key, values.get("carbs") if key == "carbohydrates" else None)
+            if not isinstance(value, (int, float)):
+                raise IncompleteNutritionData(
+                    "MyFitnessPal returned an incomplete daily nutrition response."
+                )
+
+
 def inclusive_days(start: date, end: date) -> list[date]:
     if end < start:
         raise ValueError("end must be on or after start")
@@ -100,6 +115,7 @@ class NutritionService:
         for attempt in range(self._retry_attempts):
             try:
                 acquired = self.acquirer.fetch_day(day)
+                validate_nutrition_contract(acquired)
                 self.store.persist_acquired_day(acquired)
                 self.store.mark_synced(day)
                 result = self._cached_result(day, "upstream")
