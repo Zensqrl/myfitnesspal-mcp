@@ -52,3 +52,5 @@ Provide locally cached nutrition to Home Assistant. Live dashboard acceptance PA
 ## Maintenance
 
 Canonical status; supersedes resolved diagnostic blockers. Update after meaningful progress with implemented/released/deployed/live-verified distinctions. Do not mark READY from tests alone or store secrets/personal nutrition values.
+
+- Dependency maintenance (2026-10-07): prepared a configuration-only draft PR on `codex/gdm-publish-20261007` from verified remote main. Weekly pip, Actions, Docker and Compose version updates use minor/patch groups and a five-PR limit; major versions remain separate. Local offline validation is recorded in the PR. No runtime version, deployment, credential or service changes. Hosted activation/security settings remain unverified.
