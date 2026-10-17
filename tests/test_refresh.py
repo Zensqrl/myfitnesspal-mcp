@@ -85,3 +85,15 @@ def test_seed_profile_calls_are_serialized(tmp_path, monkeypatch):
         thread.join()
 
     assert peak == 1
+
+
+def test_seed_cookies_pin_host_prefixed_cookies_to_the_host():
+    params = refresh.seed_cookie_params(
+        {"__Secure-next-auth.session-token": "tok", "__Host-next-auth.csrf-token": "c"}
+    )
+    assert params[0]["domain"] == ".myfitnesspal.com"
+    assert params[1] == {
+        "name": "__Host-next-auth.csrf-token",
+        "value": "c",
+        "url": refresh.MFP_URL,
+    }
