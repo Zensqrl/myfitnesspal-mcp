@@ -231,7 +231,8 @@ async def fitness_delete_food(
     matches nothing, the error lists what's actually logged that day/meal — use
     that to retry with a better query. If it matches more than one entry (and
     none is an exact name match), the error lists the candidates; narrow `query`
-    to pick one.
+    to pick one. Identical duplicates in the same meal are interchangeable;
+    one is removed per call.
     meal: optional breakfast|lunch|dinner|snacks to disambiguate duplicates.
     date: YYYY-MM-DD (default: today).
     """
@@ -269,7 +270,7 @@ async def fitness_modify_food(
     matches nothing, the error lists what's actually logged that day/meal — use
     that to retry with a better query. If it matches more than one entry (and
     none is an exact name match), the error lists the candidates; narrow `query`
-    to pick one.
+    to pick one. Of several identical duplicates, one is replaced.
     new_query: the food to add instead; omit to re-add `query` (e.g. to change
     quantity). meal: breakfast|lunch|dinner|snacks. date: YYYY-MM-DD (default: today).
     """

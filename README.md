@@ -372,8 +372,8 @@ Use the same `--from 'mfp-mcp[autorefresh]'` form in your client configuration.
 | `fitness_get_day` | Nutrition totals, diary entries, MFP daily note, and feel note for one day |
 | `fitness_search_food` | Candidate matches with brand, calories, macros, serving, and IDs |
 | `fitness_log_food` | Log a food to the real diary (top match or exact search candidate) |
-| `fitness_delete_food` | Remove a diary entry by name match |
-| `fitness_modify_food` | Replace an entry or change its quantity |
+| `fitness_delete_food` | Remove a diary entry by name match; identical entries in one meal are removed one at a time |
+| `fitness_modify_food` | Replace an entry or change its quantity; identical entries are replaced one at a time |
 | `fitness_log_weight` | Log a weight measurement (updates the same day on re-log) |
 | `fitness_get_exercise` | Read the exercise diary (cardio and strength) |
 | `fitness_get_note` | Read the MyFitnessPal daily diary note |

@@ -24,6 +24,15 @@ def test_profile_seeded_does_not_create_profile(tmp_path, monkeypatch):
     assert not profile.exists()
 
 
+def test_profile_paths_are_separate_for_different_accounts(tmp_path, monkeypatch):
+    monkeypatch.setenv("MFP_MCP_DATA_DIR", str(tmp_path))
+    first = refresh.profile_dir("account-a", create=True)
+    second = refresh.profile_dir("account-b", create=True)
+    assert first != second
+    assert first.is_dir() and second.is_dir()
+    assert first.parent != second.parent
+
+
 def test_seed_profile_persists_harvested_cookies_and_marker(tmp_path, monkeypatch):
     profile = _profile_paths(tmp_path, monkeypatch)
     harvested = {auth.SESSION_COOKIE: "rotated", "other": "cookie"}
@@ -85,3 +94,80 @@ def test_seed_profile_calls_are_serialized(tmp_path, monkeypatch):
         thread.join()
 
     assert peak == 1
+
+
+def test_seed_cookies_pin_host_prefixed_cookies_to_the_host():
+    params = refresh.seed_cookie_params(
+        {"__Secure-next-auth.session-token": "tok", "__Host-next-auth.csrf-token": "c"}
+    )
+    assert params[0]["domain"] == ".myfitnesspal.com"
+    assert params[1] == {
+        "name": "__Host-next-auth.csrf-token",
+        "value": "c",
+        "url": refresh.MFP_URL,
+    }
+
+
+def test_host_cookie_seeding_uses_selected_account_profile(tmp_path, monkeypatch):
+    import playwright.sync_api
+
+    profiles = []
+    seeded = []
+
+    class FakePage:
+        def goto(self, *args, **kwargs):
+            pass
+
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    class FakeContext:
+        pages = [FakePage()]
+
+        def add_cookies(self, params):
+            seeded.extend(params)
+
+        def cookies(self, _url):
+            return [{"name": auth.SESSION_COOKIE, "value": "rotated"}]
+
+        def close(self):
+            pass
+
+    class FakeBrowser:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def launch_persistent_context(self, path, *, headless):
+            profiles.append((path, headless))
+            return FakeContext()
+
+    class FakePlaywright:
+        chromium = FakeBrowser()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(playwright.sync_api, "sync_playwright", FakePlaywright)
+    monkeypatch.setattr(
+        refresh, "profile_dir", lambda username, *, create: tmp_path / username
+    )
+
+    harvested = refresh._visit_and_harvest(
+        {auth.SESSION_COOKIE: "token", "__Host-next-auth.csrf-token": "csrf"},
+        username="account-a",
+    )
+
+    assert profiles == [(str(tmp_path / "account-a"), True)]
+    assert seeded[0]["domain"] == ".myfitnesspal.com"
+    assert seeded[1] == {
+        "name": "__Host-next-auth.csrf-token",
+        "value": "csrf",
+        "url": refresh.MFP_URL,
+    }
+    assert harvested == {auth.SESSION_COOKIE: "rotated"}
