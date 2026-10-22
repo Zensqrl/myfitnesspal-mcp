@@ -8,6 +8,29 @@ from myfitnesspal_mcp.models import ServiceDayResult
 from myfitnesspal_mcp.store import Store
 
 
+def test_tool_metadata_lists_offline_and_classifies_writes(monkeypatch):
+    def no_client():
+        raise AssertionError("tool discovery must not access an account")
+
+    monkeypatch.setattr(mfp_client, "get_client", no_client)
+    tools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
+    assert tools
+    for name, tool in tools.items():
+        assert tool.title, name
+        assert tool.annotations.readOnlyHint is not None, name
+        assert tool.annotations.openWorldHint is not None, name
+        if not tool.annotations.readOnlyHint:
+            assert tool.annotations.destructiveHint is not None, name
+            assert tool.annotations.idempotentHint is not None, name
+
+    assert tools["fitness_log_weight"].annotations.destructiveHint is True
+    assert tools["fitness_log_weight"].annotations.idempotentHint is True
+    assert tools["fitness_log_feel"].annotations.destructiveHint is True
+    assert tools["fitness_log_feel"].annotations.openWorldHint is False
+    assert tools["fitness_log_food"].annotations.destructiveHint is False
+    assert tools["fitness_log_food"].annotations.idempotentHint is False
+
+
 class FakeContext:
     def __init__(self):
         self.messages = []

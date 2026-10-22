@@ -143,7 +143,7 @@ async def _write_result(
     return response, store
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+@mcp.tool(title="Get day summary", annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_get_day(date: str | None = None, ctx: Context = None) -> dict:
     """Nutrition summary, diary entries, the MyFitnessPal daily note, and the
     local feel note for a day.
@@ -160,7 +160,7 @@ async def fitness_get_day(date: str | None = None, ctx: Context = None) -> dict:
     return response
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+@mcp.tool(title="Search foods", annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_search_food(
     query: str, limit: int = 5, with_macros: bool = True, ctx: Context = None
 ) -> dict:
@@ -183,7 +183,7 @@ async def fitness_search_food(
     return await with_session(ctx, op)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
+@mcp.tool(title="Log food", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 async def fitness_log_food(
     query: str,
     meal: str = "breakfast",
@@ -221,7 +221,7 @@ async def fitness_log_food(
     return result
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
+@mcp.tool(title="Delete food entry", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 async def fitness_delete_food(
     query: str, meal: str | None = None, date: str | None = None, ctx: Context = None
 ) -> dict:
@@ -255,7 +255,7 @@ async def fitness_delete_food(
     return result
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
+@mcp.tool(title="Replace food entry", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 async def fitness_modify_food(
     query: str,
     new_query: str | None = None,
@@ -291,7 +291,7 @@ async def fitness_modify_food(
     return result
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
+@mcp.tool(title="Log weight", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True))
 async def fitness_log_weight(
     weight: float, date: str | None = None, ctx: Context = None
 ) -> dict:
@@ -314,7 +314,7 @@ async def fitness_log_weight(
     return result
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+@mcp.tool(title="Get exercise diary", annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_get_exercise(date: str | None = None, ctx: Context = None) -> dict:
     """Read the MyFitnessPal exercise diary (cardio + strength) for a day.
 
@@ -328,7 +328,7 @@ async def fitness_get_exercise(date: str | None = None, ctx: Context = None) -> 
     return await with_session(ctx, op)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+@mcp.tool(title="Get daily note", annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_get_note(date: str | None = None, ctx: Context = None) -> dict:
     """Read the MyFitnessPal daily diary note (the free-text 'Notes' box at the
     bottom of the day) straight from your account.
@@ -346,7 +346,7 @@ async def fitness_get_note(date: str | None = None, ctx: Context = None) -> dict
     return response
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
+@mcp.tool(title="Write daily note", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 async def fitness_log_note(
     text: str, date: str | None = None, append: bool = False, ctx: Context = None
 ) -> dict:
@@ -370,7 +370,7 @@ async def fitness_log_note(
     return result
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@mcp.tool(title="Save feel note", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False))
 def fitness_log_feel(
     note: str | None = None, rating: int | None = None, date: str | None = None
 ) -> dict:
@@ -385,7 +385,7 @@ def fitness_log_feel(
     return get_store(auth.saved_username()).set_feel(day.isoformat(), note, rating)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+@mcp.tool(title="Get metric trend", annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_get_trends(
     metric: str, start: str | None = None, end: str | None = None, ctx: Context = None
 ) -> dict:
@@ -408,7 +408,7 @@ async def fitness_get_trends(
     return result
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+@mcp.tool(title="Export date range", annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def fitness_bulk_export(
     start: str | None = None, end: str | None = None, sync_first: bool = False,
     ctx: Context = None,
