@@ -1,4 +1,19 @@
+import pytest
+
 from myfitnesspal_mcp import mfp_client
+
+
+def test_missing_session_gives_mode_appropriate_reconnect_hint(monkeypatch):
+    monkeypatch.setattr(mfp_client.auth, "load_cookies", lambda: None)
+
+    with pytest.raises(mfp_client.NotConnectedError) as caught:
+        mfp_client.get_client()
+
+    message = str(caught.value)
+    assert message == mfp_client.RECONNECT_HINT
+    assert "Connect / reconnect page" in message
+    assert "uvx mfp-mcp auth" in message
+    assert "myfitnesspal-mcp auth" not in message
 
 
 def test_diary_route_preserves_identity_and_checks_principal(tmp_path, monkeypatch):
