@@ -12,7 +12,9 @@ from .rate_limit import RateLimitedSession, RequestRateLimiter
 
 RECONNECT_HINT = (
     "MyFitnessPal session expired or not connected. "
-    "Re-run 'myfitnesspal-mcp auth' or update MFP_COOKIE, then retry."
+    "For a private browser-setup deployment, use its Connect / reconnect page. "
+    "For a local uvx installation, run 'uvx mfp-mcp auth' in your own terminal, "
+    "then retry."
 )
 
 
