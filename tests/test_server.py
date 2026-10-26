@@ -54,9 +54,23 @@ def test_run_with_refresh_gives_clear_error_when_retry_fails(monkeypatch):
         raise MyfitnesspalLoginError("still expired")
 
     ctx = FakeContext()
-    with pytest.raises(RuntimeError, match="myfitnesspal-mcp auth"):
+    with pytest.raises(RuntimeError, match="uvx mfp-mcp auth"):
         asyncio.run(server.run_with_refresh(ctx, op))
     assert "Session refresh failed." in ctx.messages
+
+
+def test_refresh_failure_does_not_repeat_reconnect_hint(monkeypatch):
+    monkeypatch.setattr(server.refresh, "refresh_session", lambda: None)
+
+    def op():
+        raise mfp_client.NotConnectedError(mfp_client.RECONNECT_HINT)
+
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(server.run_with_refresh(None, op))
+
+    message = str(caught.value)
+    assert message.count(mfp_client.RECONNECT_HINT) == 1
+    assert message.endswith("(retry after refresh failed)")
 
 
 def test_run_with_refresh_does_not_retry_other_errors(monkeypatch):

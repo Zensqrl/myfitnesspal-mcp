@@ -499,7 +499,10 @@ layout also works with `MFP_MCP_DATA_DIR=/data`.
 
 - **403 / Cloudflare blocked:** Try `MFP_IMPERSONATE=chrome124` or another
   supported [curl_cffi target](https://github.com/lexiforest/curl_cffi#supported-browsers).
-- **Session expired:** Re-run `mfp-mcp auth`, or install the auto-refresh extra.
+- **Session expired:** For a private browser-setup deployment, use
+  **Connect / reconnect** on its setup page. For a local `uvx` install, run
+  `uvx mfp-mcp auth` in your own terminal; the auto-refresh extra can renew
+  supported sessions.
 - **Profile lookup fails:** Set `MFP_USERNAME` to your username, not email.
 
 ## Development
