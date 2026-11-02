@@ -1,6 +1,14 @@
 const el = id => document.getElementById(id);
 let browserOpen = false;
 let archiveData = null;
+let actionPending = false;
+let statusWorking = false;
+
+function updateMutatingState() {
+  for (const button of document.querySelectorAll('.mutating,.utility-mutating')) {
+    button.disabled = statusWorking || actionPending;
+  }
+}
 
 function localIsoDate(value = new Date()) {
   const year = value.getFullYear();
@@ -52,16 +60,17 @@ async function refresh() {
         : 'about:blank';
       browserOpen = s.browser_open;
     }
-    const working = Boolean(s.busy || s.queued);
-    for (const button of document.querySelectorAll('.mutating,.utility-mutating')) {
-      button.disabled = working;
-    }
+    statusWorking = Boolean(s.busy || s.queued);
+    updateMutatingState();
   } catch (error) {
     el('message').textContent = error.message;
   }
 }
 
 async function action(name, data = {}) {
+  if (actionPending) return false;
+  actionPending = true;
+  updateMutatingState();
   el('message').textContent = 'Sending request...';
   try {
     const response = await fetch(`/api/${name}`, {
@@ -76,6 +85,9 @@ async function action(name, data = {}) {
   } catch (error) {
     el('message').textContent = error.message;
     return false;
+  } finally {
+    actionPending = false;
+    updateMutatingState();
   }
 }
 
@@ -210,6 +222,17 @@ el('paste').onclick = () => {
 el('disconnect').onclick = () => {
   if (confirm('Disconnect MyFitnessPal? Your archived data will be retained.')) {
     action('disconnect', {confirm: true});
+  }
+};
+el('diary-repair-form').onsubmit = event => {
+  event.preventDefault();
+  const username = el('diary-username').value;
+  if (!username || /[@/?#\\\s\x00-\x1f\x7f]/.test(username)) {
+    el('message').textContent = 'Enter a MyFitnessPal username, not an email or URL.';
+    return;
+  }
+  if (confirm(`Save ${username} as the diary username for this connected account?`)) {
+    action('repair-diary-username', {username});
   }
 };
 el('cancel-utility').onclick = () => action('cancel-utility');

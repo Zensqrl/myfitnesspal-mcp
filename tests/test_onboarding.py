@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import time
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
@@ -92,6 +94,85 @@ def test_wrong_account_preserves_credentials(manager, monkeypatch):
         manager.finish(cookies={auth.SESSION_COOKIE: "new"})
     assert auth.saved_username() == "tester"
     assert auth.load_cookies()[auth.SESSION_COOKIE] == "old"
+
+
+def test_repair_diary_username_preserves_account_and_credentials(manager, monkeypatch):
+    auth.save_cookies({auth.SESSION_COOKIE: "synthetic"}, "tester")
+    directory = config.account_data_dir("tester")
+    fingerprint = hashlib.sha256(b"id-tester").hexdigest()
+    (directory / "principal.sha256").write_text(fingerprint + "\n")
+    with StoreContext("tester"):
+        pass
+    fake_validation(monkeypatch)
+    manager.repair_diary_username("verified-name")
+    assert json.loads((directory / "diary-username.json").read_text()) == {
+        "username": "verified-name", "principal_sha256": fingerprint,
+    }
+    assert auth.saved_username() == "tester"
+    assert auth.load_cookies()[auth.SESSION_COOKIE] == "synthetic"
+    with StoreContext("tester"):
+        pass
+
+
+@pytest.mark.parametrize("username", ["person@example.com", "../other", "", " space", "bad\nname"])
+def test_repair_diary_username_rejects_invalid_input(manager, username):
+    with pytest.raises(ValueError):
+        manager.repair_diary_username(username)
+
+
+def test_repair_diary_username_fails_closed_on_principal_mismatch(manager, monkeypatch):
+    auth.save_cookies({auth.SESSION_COOKIE: "synthetic"}, "tester")
+    directory = config.account_data_dir("tester")
+    (directory / "principal.sha256").write_text(hashlib.sha256(b"different").hexdigest())
+    fake_validation(monkeypatch)
+    with pytest.raises(AccountMismatch):
+        manager.repair_diary_username("verified-name")
+    assert not (directory / "diary-username.json").exists()
+    assert auth.saved_username() == "tester"
+
+
+def test_repair_diary_username_requires_saved_session(manager, monkeypatch):
+    fake_validation(monkeypatch)
+    with pytest.raises(mfp_client.NotConnectedError):
+        manager.repair_diary_username("verified-name")
+    assert not list(config.data_dir().rglob("diary-username.json"))
+
+
+def test_repair_diary_username_rejects_expired_session_without_overwriting_hint(manager, monkeypatch):
+    auth.save_cookies({auth.SESSION_COOKIE: "expired-synthetic"}, "tester")
+    directory = config.account_data_dir("tester")
+    hint = directory / "diary-username.json"
+    hint.write_text("previous hint\n")
+    monkeypatch.setattr(mfp_client, "build_client", lambda *a, **kw: (_ for _ in ()).throw(
+        mfp_client.AuthenticationError("expired synthetic session")))
+    with pytest.raises(mfp_client.AuthenticationError):
+        manager.repair_diary_username("verified-name")
+    assert hint.read_text() == "previous hint\n"
+
+
+def test_repair_diary_username_requires_existing_bound_archive(manager, monkeypatch):
+    auth.save_cookies({auth.SESSION_COOKIE: "synthetic"}, "tester")
+    directory = config.account_data_dir("tester")
+    (directory / "principal.sha256").write_text(hashlib.sha256(b"id-tester").hexdigest())
+    fake_validation(monkeypatch)
+    database = config.database_path("tester")
+    assert not database.exists()
+    with pytest.raises(AccountMismatch):
+        manager.repair_diary_username("verified-name")
+    assert not database.exists()
+    assert not (directory / "diary-username.json").exists()
+
+
+def test_repair_diary_username_rejects_different_archive_binding(manager, monkeypatch):
+    auth.save_cookies({auth.SESSION_COOKIE: "synthetic"}, "tester")
+    directory = config.account_data_dir("tester")
+    (directory / "principal.sha256").write_text(hashlib.sha256(b"id-tester").hexdigest())
+    fake_validation(monkeypatch)
+    store = Store(config.database_path("tester"), account_id=config.account_key("other"))
+    store.close()
+    with pytest.raises(AccountMismatch):
+        manager.repair_diary_username("verified-name")
+    assert not (directory / "diary-username.json").exists()
 
 
 def test_finish_validates_then_promotes(manager, monkeypatch):

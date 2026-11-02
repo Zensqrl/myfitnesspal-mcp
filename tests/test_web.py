@@ -58,6 +58,19 @@ def test_disconnect_needs_confirmation(client):
     assert client.post("/api/disconnect", headers=POST, json={"confirm": True}).status_code == 202
 
 
+def test_diary_repair_requires_gateway_origin_and_valid_username(client):
+    assert client.post("/api/repair-diary-username", headers=POST, json={"username": "person"}).status_code == 202
+    client.manager.enqueue.assert_called_once_with(
+        "repair diary username", client.manager.repair_diary_username, "person"
+    )
+    assert client.post("/api/repair-diary-username", headers=AUTH, json={"username": "person"}).status_code == 403
+    assert client.post("/api/repair-diary-username", headers={**POST, "Origin": "https://evil.test"}, json={"username": "person"}).status_code == 403
+    assert client.post("/api/repair-diary-username", headers={"Origin": POST["Origin"], "X-MFP-Request": "1"}, json={"username": "person"}).status_code == 403
+    assert client.post("/api/repair-diary-username", headers=POST, json={"username": ""}).status_code == 400
+    assert client.post("/api/repair-diary-username", headers=POST, json={"username": "person@example.com"}).status_code == 400
+    assert client.post("/api/repair-diary-username", headers=POST, json={"username": "../other"}).status_code == 400
+
+
 def test_mcp_lists_only_archive_tools_without_login(client):
     headers = {**AUTH, "Host": "app:8484", "Accept": "application/json, text/event-stream"}
     response = client.post("/mcp", headers=headers, json={

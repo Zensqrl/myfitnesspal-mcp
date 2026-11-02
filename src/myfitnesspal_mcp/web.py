@@ -18,7 +18,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from . import auth
-from .onboarding import Onboarding
+from .onboarding import Onboarding, valid_diary_username
 
 
 class GatewayOnly:
@@ -149,6 +149,11 @@ def create_app(manager=None):
                 if data.get("confirm") is not True:
                     raise ValueError()
                 fn, args, name = manager.disconnect, (), "disconnect"
+            elif op == "repair-diary-username":
+                username = data.get("username")
+                if not valid_diary_username(username):
+                    raise ValueError()
+                fn, args, name = manager.repair_diary_username, (username,), "repair diary username"
             elif op == "sync":
                 queued = manager.queue_day(date.today(), force=True)
                 return JSONResponse({"queued": queued, "error": None if queued else manager.message},
