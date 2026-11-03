@@ -7,6 +7,9 @@
 <section aria-live="polite"><h2 id="state">Loading…</h2><p id="detail"></p><p id="freshness"></p><p id="message"></p></section>
 <nav aria-label="Connection actions"><button id="start" class="mutating">Connect / reconnect</button><button id="sync" class="mutating">Sync today</button><button id="disconnect" class="mutating">Disconnect</button></nav>
 
+<section><h2>Diary username repair</h2><p>If diary pages use the wrong username after a successful connection, enter the MyFitnessPal username you verified on your profile. This changes only the route for your own diary. It does not rename the saved account, credentials, or archive. A current MyFitnessPal session and matching account identity are required.</p>
+<form id="diary-repair-form"><label for="diary-username">Verified MyFitnessPal username (not email)</label><input id="diary-username" autocomplete="off" maxlength="128" required><button class="mutating" type="submit">Save diary username</button></form></section>
+
 <section><h2>Activity</h2><p>Recent safe server activity; clears when the app restarts. Tokens and diary contents are never logged here.</p>
 <div id="job" hidden><h3>Historical synchronization</h3><progress id="job-progress" max="1" value="0"></progress><p id="job-detail"></p><button id="cancel-utility">Cancel after current date</button></div>
 <pre id="activity" role="log" aria-live="polite">Waiting for server status...</pre></section>
@@ -39,4 +42,5 @@
 <details><summary>Fallback: paste a session cookie</summary><p>Use this if MyFitnessPal rejects the server browser.</p>
 <label for="cookie">Session cookie</label><input id="cookie" type="password" autocomplete="off"><button id="paste" class="mutating">Save cookie</button></details>
 <p>Your archive stays on this server. Disconnecting removes local login access and retains archived data.</p>
+<p>The setup page administrator password protects access to this local page. It is separate from your MyFitnessPal sign-in. The MyFitnessPal session cookie grants account access; paste it only into the connection form when needed, never into the administrator password prompt. Changing the diary username does not change either credential.</p>
 </main></body></html>

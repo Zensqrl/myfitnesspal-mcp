@@ -10,12 +10,21 @@ from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 import os
 import hashlib
+import json
+import sqlite3
 import time
 
 from . import auth, browser_client, config, mfp_client
 from .freshness import FreshnessPolicy
 from .runtime import create_service
 from .store import Store
+
+
+def valid_diary_username(username: object) -> bool:
+    return (isinstance(username, str) and bool(username) and len(username) <= 128
+            and username == username.strip()
+            and not any(c in username for c in "@/?#\\")
+            and not any(ord(c) < 33 or ord(c) == 127 for c in username))
 
 
 class Onboarding:
@@ -217,6 +226,44 @@ class Onboarding:
         self.reconnect = False
         self.browser_session = None
         browser_client.call("forget")
+
+    def repair_diary_username(self, username: str):
+        """Pin only this authenticated principal's own-diary route."""
+        if not valid_diary_username(username):
+            raise ValueError("Supply a MyFitnessPal username, not an email or URL.")
+        account = auth.saved_username()
+        cookies = auth.load_cookies()
+        if not account or not cookies:
+            raise mfp_client.NotConnectedError("Connect to MyFitnessPal first.")
+        client = mfp_client.build_client(cookies, username=account)
+        try:
+            principal = str(client.user_id or "")
+            if not principal:
+                raise AccountMismatch()
+            fingerprint = hashlib.sha256(principal.encode()).hexdigest()
+            directory = config.account_data_dir(account)
+            identity = directory / "principal.sha256"
+            if not identity.exists() or identity.read_text().strip() != fingerprint:
+                raise AccountMismatch()
+            database = config.database_path(account)
+            if not database.is_file():
+                raise AccountMismatch()
+            try:
+                with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+                    row = connection.execute(
+                        "SELECT value FROM meta WHERE key = 'account_id'"
+                    ).fetchone()
+            except sqlite3.Error as exc:
+                raise AccountMismatch() from exc
+            if row is None or row[0] != config.account_key(account):
+                raise AccountMismatch()
+            auth._atomic_write(directory / "diary-username.json", json.dumps({
+                "username": username, "principal_sha256": fingerprint,
+            }) + "\n")
+            mfp_client.reset()
+            self.report("Diary username route saved for the verified account; archive identity unchanged.")
+        finally:
+            client.session.close()
 
     def sync_day(self, day, force=False):
         if not auth.load_cookies():
